@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import type { Arrow, BoardArray } from "../types";
 import { FILES, movesByFrom, sqIdx, sqName } from "../lib/chess";
 import { PIECE_IMG } from "../lib/pieces";
@@ -19,12 +19,13 @@ export function Board({ board, flipped, legal, onPick, lastMove, arrows }: Board
   const byFrom = useMemo(() => (legal ? movesByFrom(legal) : {}), [legal]);
   const targets = sel && byFrom[sel] ? byFrom[sel].map((u) => u.slice(2, 4)) : [];
 
+  useEffect(() => setSel(null), [legal, flipped]);
+
   function handleClick(name: string) {
     if (!legal) return;
     if (sel && byFrom[sel]) {
       const cands = byFrom[sel].filter((u) => u.slice(2, 4) === name);
       if (cands.length) {
-        // promoção: escolhe dama por padrão
         const uci = cands.find((u) => u.length === 4 || u.endsWith("q")) ?? cands[0];
         setSel(null);
         onPick?.(uci);
@@ -65,7 +66,7 @@ export function Board({ board, flipped, legal, onPick, lastMove, arrows }: Board
   }
 
   return (
-    <div className="board">
+    <div className={`board${legal ? " interactive" : " readonly"}`}>
       <div className="grid">{squares}</div>
       {arrows && arrows.length > 0 && <Arrows arrows={arrows} flipped={flipped} />}
     </div>

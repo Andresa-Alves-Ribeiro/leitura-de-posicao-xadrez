@@ -2,6 +2,7 @@ import type { Attempt, Puzzle } from "../types";
 import { colorName, scoreAttempt, type GradeCls } from "../lib/scoring";
 import { otherColor } from "../lib/chess";
 import { StepBar } from "./StatsBar";
+import { ScoreRing } from "./ScoreRing";
 
 export type ResultTab = "stm" | "other";
 
@@ -32,13 +33,24 @@ export const ARROW_BY_CLS: Record<GradeCls, string> = {
 export function ResultPanel({ puzzle: p, attempt, streak, onNext }: ResultPanelProps) {
   const r = scoreAttempt(p, attempt);
   const other = otherColor(p.toMove);
+  const pct = Math.round(r.s * 100);
+  const headline = pct >= 85 ? "Brilhante!" : pct >= 60 ? "Boa sessão." : "Segue treinando.";
+  const ringLabel = pct >= 85 ? "Leitura afiada" : pct >= 60 ? "No caminho" : "Mais uma mesa";
 
   return (
     <>
       <StepBar current={3} />
-      <div className="verdict pop">
-        <div className="big">Posição concluída.</div>
-        <div className="why">Resumo das três respostas desta posição.</div>
+      <div className="verdict pop result-hero">
+        <ScoreRing pct={pct} label={ringLabel} />
+        <div className="result-copy">
+          <div className="big">{headline}</div>
+          <div className="why">Placar das três respostas desta posição.</div>
+          {streak >= 3 && (
+            <span className="streak-pill" title="Bônus de XP ativo">
+              Sequência {streak} · em chamas
+            </span>
+          )}
+        </div>
       </div>
 
       <div className="res summary">
@@ -77,11 +89,12 @@ export function ResultPanel({ puzzle: p, attempt, streak, onNext }: ResultPanelP
       </div>
 
       <div className="gain">
-        <span className="mono">
-          {Math.round(r.s * 100)}% · {attempt.delta >= 0 ? "+" : ""}
-          {attempt.delta} rating · +{attempt.xpGain} XP{streak >= 3 ? ` · sequência de ${streak}` : ""}
+        <span className="mono gain-stats">
+          {pct}% · {attempt.delta >= 0 ? "+" : ""}
+          {attempt.delta} rating · +{attempt.xpGain} XP
+          {streak >= 3 ? ` · seq. ${streak}` : ""}
         </span>
-        <button className="btn" type="button" onClick={onNext}>
+        <button className="btn pulse" type="button" onClick={onNext}>
           Próxima posição
         </button>
       </div>

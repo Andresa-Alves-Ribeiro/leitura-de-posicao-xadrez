@@ -39,7 +39,7 @@ export function StepFeedback(props: StepFeedbackProps) {
     return (
       <>
         <StepBar current={props.stepIdx} />
-        <div className={`verdict pop fb ${x.cls}`}>
+        <div className={`verdict pop fb ${x.cls}${x.cls === "blunder" ? " shake" : ""}`}>
           <div className="big">{x.title}</div>
           <div className="evalline">
             <span className="mono">{x.evalLabel}</span>
@@ -69,7 +69,11 @@ export function StepFeedback(props: StepFeedbackProps) {
   return (
     <>
       <StepBar current={props.stepIdx} />
-      <div className={`verdict pop fb ${rank.grade.cls}`}>
+      <div
+        className={`verdict pop fb ${rank.grade.cls}${
+          rank.grade.cls === "blunder" || rank.grade.cls === "mistake" ? " shake" : ""
+        }`}
+      >
         <div className="big">{rank.grade.label}</div>
 
         <div className="best-block">
@@ -82,6 +86,20 @@ export function StepFeedback(props: StepFeedbackProps) {
           {rank.tip && <p className="why fb-line">{rank.tip}</p>}
           <div className="pv">{rank.pv}</div>
         </div>
+
+        {rank.miss && (
+          <div className={`miss-block ${rank.miss.cls}`}>
+            <div className="best-row">
+              <span className="pill-label">{rank.miss.title}</span>
+              <span className={`cls-badge ${rank.miss.cls}`}>{rank.miss.chip}</span>
+            </div>
+            {rank.miss.lines.map((line, i) => (
+              <p key={i} className="why fb-line">
+                {line}
+              </p>
+            ))}
+          </div>
+        )}
 
         <div className={`delta-chip ${deltaTone} ${rank.grade.cls}`}>
           <div className="delta-flow mono">

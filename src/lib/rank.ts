@@ -1,5 +1,6 @@
 import type { Color, Puzzle, SideAnalysis } from "../types";
 import { fmtDelta, fmtEval, grade, type GradeCls } from "./scoring";
+import { explainMiss, type MissExplain } from "./explainMiss";
 
 /** Ordem fixa do ranking por classificação (1º Melhor … 6º Gafe). */
 export const CLS_ORDER: GradeCls[] = [
@@ -68,6 +69,8 @@ export interface MoveRank {
   pv: string;
   bestSan: string;
   tip: string | null;
+  /** Explicação técnica do lance do usuário (só impreciso / erro / gafe). */
+  miss: MissExplain | null;
 }
 
 function isTacticalSan(san: string): boolean {
@@ -172,6 +175,8 @@ export function buildMoveRank(
     }
   }
 
+  const miss = explainMiss(a, mineUci, evalBefore);
+
   return {
     groups,
     myRank,
@@ -190,5 +195,6 @@ export function buildMoveRank(
     pv: a.pv,
     bestSan: a.bestSan,
     tip,
+    miss,
   };
 }
