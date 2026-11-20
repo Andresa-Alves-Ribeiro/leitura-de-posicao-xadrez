@@ -3,7 +3,7 @@ import { colorName } from "../lib/scoring";
 import { StepBar } from "./StatsBar";
 
 interface MoveStepProps {
-  isFirst: boolean; // true = lado com a vez real; false = vez trocada
+  isFirst: boolean;
   side: Color;
   pendingSan: string | null;
   onUndo: () => void;
@@ -16,30 +16,40 @@ export function MoveStep({ isFirst, side, pendingSan, onUndo, onConfirm }: MoveS
     <>
       <StepBar current={isFirst ? 1 : 2} />
       <h2 className="q">
-        {isFirst ? `É a vez das ${name}. Qual o melhor lance?` : `E se fosse a vez das ${name}?`}
+        {isFirst ? `Vez das ${name}. Qual o melhor lance?` : `E se fosse a vez das ${name}?`}
         <small>
           {isFirst
-            ? "Nada de tática: procure um plano. Expulsar uma peça, abrir uma coluna, rocar, levar uma peça para uma casa melhor."
-            : `Mesma posição, mas agora com a vez trocada. Qual lance calmo as ${name} jogariam?`}
+            ? "Sem tática de um lance: procure um plano calmo — espaço, coluna, posto, rei."
+            : `Mesma posição, vez trocada. Qual plano calmo as ${name} escolheriam?`}
         </small>
       </h2>
-      <div className="pending">
+      <div className={`pending${pendingSan ? " ready" : ""}`}>
         {pendingSan ? (
           <>
-            <span className="mv">{pendingSan}</span>
-            <span className="row">
+            <div className="pending-pick">
+              <span className="pill-label">Seu lance</span>
+              <span className="mv mono">{pendingSan}</span>
+            </div>
+            <span className="row sticky-actions">
               <button className="btn sec" type="button" onClick={onUndo}>
                 Desfazer
               </button>
-              <button className="btn" type="button" onClick={onConfirm}>
+              <button className="btn pulse" type="button" onClick={onConfirm}>
                 Confirmar
               </button>
             </span>
           </>
         ) : (
-          <span className="hint">Toque numa peça das {name} e depois na casa de destino.</span>
+          <span className="hint">
+            Toque numa peça das <b>{name}</b> e depois na casa de destino.
+          </span>
         )}
       </div>
+      {pendingSan && (
+        <p className="move-tip why">
+          Confira no tabuleiro — <kbd>Enter</kbd> confirma · <kbd>Esc</kbd> desfaz
+        </p>
+      )}
     </>
   );
 }
