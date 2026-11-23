@@ -303,8 +303,6 @@ export default function App() {
     );
   }
 
-  const solved = Object.keys(progress.done).length;
-
   return (
     <div className={`wrap ${stageClass}${progress.streak >= 3 ? " streak-hot" : ""}`}>
       <div className="atmosphere" aria-hidden="true" />
@@ -316,7 +314,7 @@ export default function App() {
             Leitura de <em>posição</em>
           </h1>
         </div>
-        <StatsBar progress={progress} total={PUZZLES.length} />
+        <StatsBar progress={progress} />
         <button
           className="btn danger reset-btn"
           type="button"
@@ -344,9 +342,6 @@ export default function App() {
               <span className="puzzle-id mono">#{puzzle.id}</span>
               <span className={`diff-chip ${diff.key}`} title={diff.hint}>
                 {diff.label} · {puzzle.rating}
-              </span>
-              <span className="mission mono" title="Progresso do deck">
-                Mesa {Math.min(solved + 1, PUZZLES.length)}/{PUZZLES.length}
               </span>
             </div>
             <span className="tm">

@@ -8,6 +8,7 @@ export const defaultProgress = (): Progress => ({
   streak: 0,
   bestStreak: 0,
   done: {},
+  solved: 0,
   last: null,
   lastDelta: 0,
 });
@@ -15,7 +16,14 @@ export const defaultProgress = (): Progress => ({
 export function loadProgress(): Progress {
   try {
     const raw = localStorage.getItem(KEY);
-    if (raw) return { ...defaultProgress(), ...JSON.parse(raw) };
+    if (raw) {
+      const data = JSON.parse(raw) as Partial<Progress>;
+      const parsed = { ...defaultProgress(), ...data };
+      if (typeof data.solved !== "number") {
+        parsed.solved = Object.keys(parsed.done ?? {}).length;
+      }
+      return parsed;
+    }
   } catch {
     /* localStorage indisponível */
   }

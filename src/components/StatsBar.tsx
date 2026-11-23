@@ -1,9 +1,8 @@
 import type { Progress } from "../types";
 import { level, XP_PER_LEVEL } from "../lib/scoring";
 
-export function StatsBar({ progress, total }: { progress: Progress; total: number }) {
+export function StatsBar({ progress }: { progress: Progress }) {
   const d = progress.lastDelta;
-  const solved = Object.keys(progress.done).length;
   const lv = level(progress.xp);
   const hot = progress.streak >= 3;
   return (
@@ -21,9 +20,7 @@ export function StatsBar({ progress, total }: { progress: Progress; total: numbe
         <span>XP {progress.xp % XP_PER_LEVEL}/{XP_PER_LEVEL}</span>
       </div>
       <div className="stat solved">
-        <b>
-          {solved}/{total}
-        </b>
+        <b>{progress.solved}</b>
         <span>Resolvidas</span>
       </div>
     </div>

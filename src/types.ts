@@ -51,6 +51,8 @@ export interface Progress {
   streak: number;
   bestStreak: number;
   done: Record<number, number>; // id -> % de acerto
+  /** Posições concluídas, sem teto — repetições também contam. */
+  solved: number;
   last: number | null;
   lastDelta: number;
 }

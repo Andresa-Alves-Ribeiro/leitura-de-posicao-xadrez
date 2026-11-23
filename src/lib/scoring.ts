@@ -77,6 +77,7 @@ export function applyResult(prev: Progress, p: Puzzle, s: number) {
     bestStreak: Math.max(prev.bestStreak, streak),
     xp: prev.xp + xpGain,
     done: { ...prev.done, [p.id]: Math.round(s * 100) },
+    solved: (prev.solved ?? Object.keys(prev.done).length) + 1,
     last: p.id,
   };
   return { progress, delta, xpGain };
