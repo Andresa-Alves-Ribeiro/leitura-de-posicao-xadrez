@@ -1,5 +1,5 @@
 import type { Color, Puzzle, SideAnalysis } from "../types";
-import { fmtDelta, fmtEval, grade, type GradeCls } from "./scoring";
+import { grade, type GradeCls } from "./scoring";
 import { explainMiss, type MissExplain } from "./explainMiss";
 
 /** Ordem fixa do ranking por classificação (1º Melhor … 6º Gafe). */
@@ -23,7 +23,7 @@ const CLS_RANK: Record<GradeCls, number> = {
 
 const CLS_LABEL: Record<GradeCls, string> = {
   best: "Melhor",
-  excellent: "Excelente",
+  excellent: "Ótimo",
   good: "Bom",
   inaccuracy: "Impreciso",
   mistake: "Erro",
@@ -58,11 +58,6 @@ export interface MoveRank {
   myShown: boolean;
   evalBefore: number;
   evalAfter: number;
-  deltaCp: number;
-  deltaText: string;
-  deltaShort: string;
-  beforeLabel: string;
-  afterLabel: string;
   grade: ReturnType<typeof grade>;
   theme: string;
   why: string;
@@ -77,14 +72,22 @@ function isTacticalSan(san: string): boolean {
   return /x|\+|\#|=/.test(san);
 }
 
-export function evalForSide(whiteCp: number, side: Color): number {
-  return side === "w" ? whiteCp : -whiteCp;
+/** Vez indicada no FEN da análise. */
+export function sideFromFen(fen: string): Color {
+  return fen.split(" ")[1] === "b" ? "b" : "w";
 }
 
+/**
+ * Nota depois do lance, na escala da barrinha (brancas positivo, pretas negativo).
+ * Perda das brancas desce o número; perda das pretas sobe.
+ */
+export function evalAfterMove(evalBeforeWhite: number, loss: number, side: Color): number {
+  return side === "w" ? evalBeforeWhite - loss : evalBeforeWhite + loss;
+}
+
+/** Avaliação da posição já no ponto de vista das brancas. Não inverte para quem joga. */
 export function evalBeforeForFeedback(p: Puzzle, which: "stm" | "other"): number {
-  if (which === "stm") return evalForSide(p.eval, p.toMove);
-  const side: Color = p.toMove === "w" ? "b" : "w";
-  return evalForSide(p.evalOther, side);
+  return which === "stm" ? p.eval : p.evalOther;
 }
 
 function pickUpTo3(
@@ -102,17 +105,19 @@ function pickUpTo3(
 }
 
 /**
- * Ranking por classificação Chess.com: cada faixa é um lugar (1º–6º),
- * com até 3 lances lado a lado. Delta = avaliação depois − posição anterior.
+ * Ranking por classificação: cada faixa é um lugar (1º–6º),
+ * com até 3 lances lado a lado. A nota de cada lance é a avaliação
+ * Stockfish depois dele, na escala das brancas.
  */
 export function buildMoveRank(
   a: SideAnalysis,
   mineUci: string | null,
   evalBefore: number,
 ): MoveRank {
+  const side = sideFromFen(a.fen);
   const all: RankMove[] = Object.keys(a.loss).map((uci) => {
     const loss = a.loss[uci];
-    const evalAfter = evalBefore - loss;
+    const evalAfter = evalAfterMove(evalBefore, loss, side);
     return {
       uci,
       san: a.san[uci] ?? uci,
@@ -154,19 +159,6 @@ export function buildMoveRank(
   const loss = myMove?.loss ?? 0;
   const g = grade(myMove ? loss : 0);
   const evalAfter = myMove ? myMove.evalAfter : evalBefore;
-  const deltaCp = evalAfter - evalBefore;
-  const deltaShort = fmtDelta(deltaCp);
-  const beforeLabel = fmtEval(evalBefore);
-  const afterLabel = fmtEval(evalAfter);
-
-  let deltaText: string;
-  if (deltaCp > 0) {
-    deltaText = `Antes ${beforeLabel} → depois ${afterLabel}. Você melhorou a posição em ${fmtDelta(deltaCp)}.`;
-  } else if (deltaCp < 0) {
-    deltaText = `Antes ${beforeLabel} → depois ${afterLabel}. Você piorou a posição em ${fmtDelta(deltaCp)}.`;
-  } else {
-    deltaText = `Antes ${beforeLabel} → depois ${afterLabel}. Você manteve a avaliação da posição.`;
-  }
 
   let tip: string | null = null;
   if (myMove && mineUci !== a.best) {
@@ -184,11 +176,6 @@ export function buildMoveRank(
     myShown,
     evalBefore,
     evalAfter,
-    deltaCp,
-    deltaText,
-    deltaShort,
-    beforeLabel,
-    afterLabel,
     grade: g,
     theme: a.theme,
     why: a.why,

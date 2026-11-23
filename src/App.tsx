@@ -1,11 +1,12 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import type { Arrow, Attempt, Color, Progress, Puzzle } from "./types";
 import { PUZZLES } from "./data/puzzles";
 import { applyUci, otherColor, parseFen } from "./lib/chess";
-import { applyResult, colorName, grade, level, pickNext, scoreAttempt } from "./lib/scoring";
+import { applyResult, colorName, easeRating, grade, level, MIN_RATING, RATING_BAND, scoreAttempt } from "./lib/scoring";
 import { stepIndex } from "./lib/explain";
 import { evalBeforeForFeedback } from "./lib/rank";
-import { loadProgress, resetProgress, saveProgress } from "./lib/storage";
+import { clearedProgress, loadProgress, saveProgress } from "./lib/storage";
+import { fetchLivePuzzle, loadLive, saveLive } from "./lib/livePuzzle";
 import { Board } from "./components/Board";
 import { StatsBar, XpBar } from "./components/StatsBar";
 import { BetterStep } from "./components/BetterStep";
@@ -35,22 +36,60 @@ function moveArrows(best: string, mine: string | null, lossMap: Record<string, n
   return arrows;
 }
 
+function knownBoards(progress: Progress, live: Puzzle[]): string[] {
+  return [
+    ...PUZZLES.map((p) => p.fen.split(" ")[0]),
+    ...(progress.boards ?? []),
+    ...live.map((p) => p.fen.split(" ")[0]),
+  ];
+}
+
+function inBand(positionRating: number, playerRating: number): boolean {
+  return Math.abs(positionRating - playerRating) <= RATING_BAND;
+}
+
+function atStart(progress: Progress): boolean {
+  const floor = Math.max(MIN_RATING, progress.floor ?? MIN_RATING);
+  return progress.rating <= floor + RATING_BAND;
+}
+
+let bandRequest: { key: string; promise: Promise<Puzzle> } | null = null;
+
 export default function App() {
+  const [live, setLive] = useState<Puzzle[]>(loadLive);
   const [progress, setProgress] = useState<Progress>(loadProgress);
-  const [attempt, setAttempt] = useState<Attempt>(() => newAttempt(pickNext(PUZZLES, progress)));
+  const [attempt, setAttempt] = useState<Attempt | null>(() => {
+    const saved = loadProgress();
+    const current = loadLive().find((p) => p.id === saved.currentId);
+    if (current && inBand(current.rating, saved.rating)) return newAttempt(current);
+    return null;
+  });
   const [pending, setPending] = useState<string | null>(null);
   const [flipped, setFlipped] = useState(false);
-  const [skipped, setSkipped] = useState<Attempt | null>(null);
+  const [skipped, setSkipped] = useState<{ attempt: Attempt; progress: Progress } | null>(null);
   const [toast, setToast] = useState<{ message: string; tone: "fire" | "gold" | "ok" } | null>(null);
   const [resetOpen, setResetOpen] = useState(false);
+  const [fetching, setFetching] = useState(() => {
+    const saved = loadProgress();
+    const current = loadLive().find((p) => p.id === saved.currentId);
+    return !(current && inBand(current.rating, saved.rating));
+  });
+  const [searchAt, setSearchAt] = useState(progress.rating);
+  const [fetchError, setFetchError] = useState<string | null>(null);
   const panelRef = useRef<HTMLElement>(null);
   const prevLevel = useRef(level(progress.xp));
+  const liveRef = useRef(live);
+  liveRef.current = live;
 
-  const puzzle = useMemo(() => PUZZLES.find((p) => p.id === attempt.puzzleId) ?? PUZZLES[0], [attempt.puzzleId]);
-  const other = otherColor(puzzle.toMove);
-  const diff = difficultyOf(puzzle.rating);
-  const stageClass =
-    attempt.step === "result"
+  const puzzle = useMemo(() => {
+    if (!attempt) return null;
+    return live.find((p) => p.id === attempt.puzzleId) ?? PUZZLES.find((p) => p.id === attempt.puzzleId) ?? null;
+  }, [attempt, live]);
+  const other: Color = puzzle ? otherColor(puzzle.toMove) : "w";
+  const diff = difficultyOf(puzzle?.rating ?? 0);
+  const stageClass = !attempt
+    ? "stage-result"
+    : attempt.step === "result"
       ? "stage-result"
       : attempt.step.endsWith("_fb")
         ? "stage-feedback"
@@ -58,15 +97,17 @@ export default function App() {
 
   useEffect(() => saveProgress(progress), [progress]);
 
-  const activeSide: Color = attempt.step === "m2" || attempt.step === "m2_fb" ? other : puzzle.toMove;
-  useEffect(() => setFlipped(activeSide === "b"), [activeSide, attempt.puzzleId]);
+  const activeSide: Color =
+    puzzle && attempt && (attempt.step === "m2" || attempt.step === "m2_fb") ? other : (puzzle?.toMove ?? "w");
+  useEffect(() => setFlipped(activeSide === "b"), [activeSide, attempt?.puzzleId]);
 
   // No mobile, após responder, traz o painel para a vista
   useEffect(() => {
+    if (!attempt) return;
     if (typeof window === "undefined" || window.matchMedia("(min-width: 900px)").matches) return;
     if (!attempt.step.endsWith("_fb") && attempt.step !== "result") return;
     panelRef.current?.scrollIntoView({ behavior: "smooth", block: "nearest" });
-  }, [attempt.step]);
+  }, [attempt]);
 
   function start(p: Puzzle, clearSkip = true) {
     setAttempt(newAttempt(p));
@@ -74,20 +115,97 @@ export default function App() {
     if (clearSkip) setSkipped(null);
   }
 
+  function adopt(found: Puzzle, base: Progress, preserveSkip = false) {
+    const raised = atStart(base) && found.rating > base.rating + RATING_BAND;
+    const aligned: Progress = raised ? { ...base, floor: found.rating, rating: found.rating, lastDelta: 0 } : base;
+    const board = found.fen.split(" ")[0];
+    const nextProgress: Progress = {
+      ...aligned,
+      boards: [...(aligned.boards ?? []), board],
+      currentId: found.id,
+    };
+    const nextLive = [...liveRef.current.filter((p) => p.fen.split(" ")[0] !== board), found].slice(-40);
+    saveProgress(nextProgress);
+    saveLive(nextLive);
+    setLive(nextLive);
+    setProgress(nextProgress);
+    prevLevel.current = level(nextProgress.xp);
+    if (!preserveSkip) setSkipped(null);
+    start(found, !preserveSkip);
+  }
+
+  async function placeLive(rating: number, base: Progress, preserveSkip = false) {
+    setSearchAt(rating);
+    setFetching(true);
+    setFetchError(null);
+    setToast(null);
+    try {
+      const found = await fetchLivePuzzle(rating, knownBoards(base, liveRef.current), atStart(base));
+      adopt(found, base, preserveSkip);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Não consegui buscar uma posição nova no Lichess.";
+      setFetchError(message);
+      setToast({ message, tone: "ok" });
+    } finally {
+      setFetching(false);
+    }
+  }
+
+  const placeRef = useRef(placeLive);
+  placeRef.current = placeLive;
+
+  useEffect(() => {
+    let cancelled = false;
+    const saved = loadProgress();
+    const shown = loadLive().find((p) => p.id === saved.currentId);
+    if (shown && inBand(shown.rating, saved.rating)) return;
+    const initial = atStart(saved);
+    const key = `${saved.rating}:${initial}`;
+    if (!bandRequest || bandRequest.key !== key) {
+      bandRequest = { key, promise: fetchLivePuzzle(saved.rating, knownBoards(saved, loadLive()), initial) };
+    }
+    const request = bandRequest.promise;
+    setSearchAt(saved.rating);
+    setFetching(true);
+    setFetchError(null);
+    request
+      .then((found) => {
+        if (!cancelled) adopt(found, saved);
+      })
+      .catch((err: unknown) => {
+        if (!cancelled) {
+          const message = err instanceof Error ? err.message : "Não consegui buscar uma posição nova no Lichess.";
+          setFetchError(message);
+          setToast({ message, tone: "ok" });
+        }
+      })
+      .finally(() => {
+        if (bandRequest?.promise === request) bandRequest = null;
+        if (!cancelled) setFetching(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+    // Troca a posição salva quando ela ficou fora da faixa do rating atual.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   const confirmMove = useCallback(() => {
     if (!pending) return;
     setSkipped(null);
     setAttempt((a) => {
+      if (!a || (a.step !== "m1" && a.step !== "m2")) return a;
       if (a.step === "m1") return { ...a, m1: pending, step: "m1_fb" };
-      if (a.step === "m2") return { ...a, m2: pending, step: "m2_fb" };
-      return a;
+      return { ...a, m2: pending, step: "m2_fb" };
     });
     setPending(null);
   }, [pending]);
 
   function finishPuzzle() {
-    const { s } = scoreAttempt(puzzle, attempt);
-    const res = applyResult(progress, puzzle, s);
+    if (!puzzle || !attempt) return;
+    const score = scoreAttempt(puzzle, attempt);
+    const { s } = score;
+    const res = applyResult(progress, puzzle, score);
     const nextLv = level(res.progress.xp);
     if (nextLv > prevLevel.current) {
       setToast({ message: `Subiu para o nível ${nextLv}`, tone: "gold" });
@@ -105,34 +223,30 @@ export default function App() {
   }
 
   function skip() {
-    setSkipped({ ...attempt });
-    const cands = PUZZLES.filter((p) => p.id !== puzzle.id && !(p.id in progress.done));
-    start(
-      cands.length ? cands[Math.floor(Math.random() * cands.length)] : pickNext(PUZZLES, progress, puzzle.id),
-      false,
-    );
+    if (!puzzle || !attempt || fetching) return;
+    const eased = easeRating(progress);
+    setSkipped({ attempt: { ...attempt }, progress });
+    setProgress(eased);
+    void placeLive(eased.rating, eased, true);
   }
 
   function undoSkip() {
     if (!skipped) return;
-    setAttempt(skipped);
+    setProgress(skipped.progress);
+    setAttempt(skipped.attempt);
     setPending(null);
     setSkipped(null);
   }
 
   function confirmReset() {
-    const fresh = resetProgress();
-    setProgress(fresh);
-    prevLevel.current = level(fresh.xp);
-    setSkipped(null);
-    setToast(null);
     setResetOpen(false);
-    start(pickNext(PUZZLES, fresh));
+    const fresh = clearedProgress(progress);
+    void placeLive(fresh.rating, fresh);
   }
 
   const answerBetter = useCallback((c: Color) => {
     setSkipped(null);
-    setAttempt((a) => (a.step === "better" ? { ...a, better: c, step: "better_fb" } : a));
+    setAttempt((a) => (a?.step === "better" ? { ...a, better: c, step: "better_fb" } : a));
   }, []);
 
   const finishRef = useRef(finishPuzzle);
@@ -140,7 +254,7 @@ export default function App() {
 
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
-      if (resetOpen) return;
+      if (resetOpen || !attempt || !puzzle) return;
       const tag = (e.target as HTMLElement | null)?.tagName;
       if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
 
@@ -172,16 +286,20 @@ export default function App() {
           if (attempt.step === "better_fb") setAttempt({ ...attempt, step: "m1" });
           else if (attempt.step === "m1_fb") setAttempt({ ...attempt, step: "m2" });
           else if (attempt.step === "m2_fb") finishRef.current();
-          else if (attempt.step === "result") start(pickNext(PUZZLES, progress));
+          else if (attempt.step === "result") {
+            placeRef.current(progress.rating, progress);
+          }
         }
       }
     }
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [attempt, pending, progress, answerBetter, confirmMove, resetOpen]);
+  }, [attempt, pending, progress, puzzle, answerBetter, confirmMove, resetOpen]);
 
   // ---- tabuleiro ----
-  let boardEl;
+  let boardEl: ReactNode = null;
+  let panelEl: ReactNode = null;
+  if (attempt && puzzle) {
   if (attempt.step === "better" || attempt.step === "better_fb") {
     boardEl = <Board key={`${puzzle.id}-b`} board={parseFen(puzzle.stm.fen)} flipped={flipped} />;
   } else if (attempt.step === "m1") {
@@ -245,7 +363,6 @@ export default function App() {
   }
 
   // ---- painel ----
-  let panelEl;
   if (attempt.step === "better") {
     panelEl = <BetterStep onAnswer={answerBetter} />;
   } else if (attempt.step === "better_fb") {
@@ -298,12 +415,12 @@ export default function App() {
         puzzle={puzzle}
         attempt={attempt}
         streak={progress.streak}
-        onNext={() => start(pickNext(PUZZLES, progress))}
+        rating={progress.rating}
+        onNext={fetching ? undefined : () => void placeLive(progress.rating, progress)}
       />
     );
   }
-
-  const solved = Object.keys(progress.done).length;
+  }
 
   return (
     <div className={`wrap ${stageClass}${progress.streak >= 3 ? " streak-hot" : ""}`}>
@@ -311,17 +428,17 @@ export default function App() {
       {toast && <Toast message={toast.message} tone={toast.tone} onDone={() => setToast(null)} />}
       <header className="hud">
         <div className="brand-block">
-          <p className="eyebrow">Treino posicional</p>
           <h1>
             Leitura de <em>posição</em>
           </h1>
         </div>
-        <StatsBar progress={progress} total={PUZZLES.length} />
+        <StatsBar progress={progress} />
         <button
           className="btn danger reset-btn"
           type="button"
           onClick={() => setResetOpen(true)}
-          title="Apaga rating, XP e histórico"
+          title="Busca no Lichess uma posição nova, até 50 pontos do seu rating."
+          disabled={fetching}
         >
           Zerar
         </button>
@@ -329,24 +446,31 @@ export default function App() {
       <ConfirmModal
         open={resetOpen}
         danger
-        title="Zerar o progresso?"
-        body="Isso apaga rating, XP, sequência e todas as posições resolvidas. A mesa recomeça do zero — não dá para desfazer."
-        confirmLabel="Zerar tudo"
+        title="Zerar o placar?"
+        body={`Isso apaga rating, XP e sequência. O rating volta para ${progress.floor || MIN_RATING}. Se não houver partida até 50 pontos disso, o início sobe para a posição mais baixa encontrada.`}
+        confirmLabel="Zerar placar"
         cancelLabel="Manter"
         onCancel={() => setResetOpen(false)}
         onConfirm={confirmReset}
       />
       <XpBar xp={progress.xp} />
+      {fetching && (
+        <p className="fetching" role="status">
+          Buscando uma posição nova no Lichess, em partidas de {searchAt - RATING_BAND} a {searchAt + RATING_BAND}…
+        </p>
+      )}
       <main>
+        {attempt && puzzle && !fetching ? (
+          <>
         <section className="boardcol">
           <div className="meta">
             <div className="meta-left">
               <span className="puzzle-id mono">#{puzzle.id}</span>
-              <span className={`diff-chip ${diff.key}`} title={diff.hint}>
+              <span
+                className={`diff-chip ${diff.key}`}
+                title={`${diff.hint}. É a dificuldade desta posição, separada do seu rating.`}
+              >
                 {diff.label} · {puzzle.rating}
-              </span>
-              <span className="mission mono" title="Progresso do deck">
-                Mesa {Math.min(solved + 1, PUZZLES.length)}/{PUZZLES.length}
               </span>
             </div>
             <span className="tm">
@@ -354,12 +478,14 @@ export default function App() {
               Vez das {colorName(activeSide, true)}
             </span>
           </div>
-          <div className={`board-frame${pending ? " has-pending" : ""}`}>{boardEl}</div>
+          <div className="board-slot">
+            <div className={`board-frame${pending ? " has-pending" : ""}`}>{boardEl}</div>
+          </div>
           <div className="tools">
             <button className="ghost" type="button" onClick={() => setFlipped((f) => !f)}>
               Girar
             </button>
-            <button className="ghost" type="button" onClick={skip}>
+            <button className="ghost" type="button" onClick={skip} disabled={fetching}>
               Pular
             </button>
             {skipped && (
@@ -372,10 +498,38 @@ export default function App() {
         <section className="panel" ref={panelRef} aria-live="polite">
           {panelEl}
         </section>
+          </>
+        ) : fetchError ? (
+          <section className="panel">
+            <h2 className="q">
+              Não consegui trazer uma posição na sua faixa.
+              <small>{fetchError}</small>
+            </h2>
+            <button className="btn" type="button" onClick={() => void placeLive(progress.rating, progress)}>
+              Tentar de novo
+            </button>
+          </section>
+        ) : fetching ? (
+          <section className="panel">
+            <h2 className="q">
+              Buscando uma posição na sua faixa.
+              <small>
+                Partidas entre {searchAt - RATING_BAND} e {searchAt + RATING_BAND}. Se não houver, entra a mais baixa e o início acompanha.
+              </small>
+            </h2>
+          </section>
+        ) : (
+          <section className="panel">
+            <h2 className="q">
+              Todas as posições já foram resolvidas.
+              <small>Cada uma entra uma vez só. Zerar busca no Lichess uma posição inédita, até 50 pontos do rating {MIN_RATING}.</small>
+            </h2>
+          </section>
+        )}
       </main>
       <footer>
         <p>
-          {PUZZLES.length} posições de partidas reais do Lichess · Stockfish 17.1 · Melhor / Excelente / Bom / Impreciso /
+          Stockfish 17.1 · Melhor / Ótimo / Bom / Impreciso /
           Erro / Gafe · Peças cburnett
         </p>
         <p className="kbd-hint">

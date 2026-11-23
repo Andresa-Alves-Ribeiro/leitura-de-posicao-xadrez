@@ -1,7 +1,7 @@
 import type { Color, Puzzle, SideAnalysis } from "../types";
 import { explainBetter } from "../lib/explain";
 import { buildMoveRank } from "../lib/rank";
-import { fmtDelta, fmtEval } from "../lib/scoring";
+import { fmtEval } from "../lib/scoring";
 import { StepBar } from "./StatsBar";
 import { ARROW_BY_CLS } from "./ResultPanel";
 
@@ -26,7 +26,7 @@ export type StepFeedbackProps = BetterFeedbackProps | MoveFeedbackProps;
 
 const LEGEND: { cls: keyof typeof ARROW_BY_CLS; label: string }[] = [
   { cls: "best", label: "Melhor" },
-  { cls: "excellent", label: "Excelente" },
+  { cls: "excellent", label: "Ótimo" },
   { cls: "good", label: "Bom" },
   { cls: "inaccuracy", label: "Impreciso" },
   { cls: "mistake", label: "Erro" },
@@ -38,8 +38,9 @@ export function StepFeedback(props: StepFeedbackProps) {
     const x = explainBetter(props.puzzle, props.chosen);
     return (
       <>
-        <StepBar current={props.stepIdx} />
-        <div className={`verdict pop fb ${x.cls}${x.cls === "blunder" ? " shake" : ""}`}>
+        <div className="panel-scroll">
+          <StepBar current={props.stepIdx} />
+          <div className={`verdict pop fb ${x.cls}${x.cls === "blunder" ? " shake" : ""}`}>
           <div className="big">{x.title}</div>
           <div className="evalline">
             <span className="mono">{x.evalLabel}</span>
@@ -53,6 +54,7 @@ export function StepFeedback(props: StepFeedbackProps) {
             </p>
           ))}
         </div>
+        </div>
         <div className="gain">
           <span />
           <button className="btn" type="button" onClick={props.onContinue}>
@@ -64,28 +66,29 @@ export function StepFeedback(props: StepFeedbackProps) {
   }
 
   const rank = buildMoveRank(props.analysis, props.mine, props.evalBefore);
-  const deltaTone = rank.deltaCp > 0 ? "up" : rank.deltaCp < 0 ? "down" : "flat";
+  const mySan = props.mine ? props.analysis.san[props.mine] ?? props.mine : null;
 
   return (
     <>
+      <div className="panel-scroll">
       <StepBar current={props.stepIdx} />
       <div
         className={`verdict pop fb ${rank.grade.cls}${
           rank.grade.cls === "blunder" || rank.grade.cls === "mistake" ? " shake" : ""
         }`}
       >
-        <div className="big">{rank.grade.label}</div>
-
-        <div className="best-block">
-          <span className="pill-label">Por que o melhor</span>
-          <div className="best-row">
-            <span className="bestmv mono">{rank.bestSan}</span>
-            <span className="chip">{rank.theme}</span>
-          </div>
-          <p className="why fb-line">{rank.why}</p>
-          {rank.tip && <p className="why fb-line">{rank.tip}</p>}
-          <div className="pv">{rank.pv}</div>
+        <div className="big">
+        {mySan && <span>{mySan}</span>} - {rank.grade.label}
         </div>
+
+        {rank.myRank != null && rank.myCls && (
+          <p className="why fb-line rank-place">
+            Seu lance está em <strong className="mono">{rank.myRank}º</strong> lugar
+            {" — "}
+            <span className={`cls-badge ${rank.myCls}`}>{rank.grade.label}</span>
+            {!rank.myShown ? " (fora da amostra exibida)" : ""}
+          </p>
+        )}
 
         {rank.miss && (
           <div className={`miss-block ${rank.miss.cls}`}>
@@ -101,32 +104,16 @@ export function StepFeedback(props: StepFeedbackProps) {
           </div>
         )}
 
-        <div className={`delta-chip ${deltaTone} ${rank.grade.cls}`}>
-          <div className="delta-flow mono">
-            <span className="delta-step">
-              <small>Antes</small>
-              {rank.beforeLabel}
-            </span>
-            <span className="delta-arrow" aria-hidden="true">
-              →
-            </span>
-            <span className="delta-step">
-              <small>Depois</small>
-              {rank.afterLabel}
-            </span>
-            <span className={`delta-num ${deltaTone}`}>{rank.deltaShort}</span>
+        <div className="best-block">
+          <div className="best-row">
+            <span className="bestmv mono">{rank.bestSan} - Melhor</span>
+            <span className="chip">{rank.theme}</span>
           </div>
-          <span className="delta-cap">{rank.deltaText}</span>
+          <span className="pill-label">Por que o melhor</span>
+          <p className="why fb-line">{rank.why}</p>
+          {rank.tip && <p className="why fb-line">{rank.tip}</p>}
+          <div className="pv">{rank.pv}</div>
         </div>
-
-        {rank.myRank != null && rank.myCls && (
-          <p className="why fb-line rank-place">
-            Seu lance está em <strong className="mono">{rank.myRank}º</strong> lugar
-            {" — "}
-            <span className={`cls-badge ${rank.myCls}`}>{rank.grade.label}</span>
-            {!rank.myShown ? " (fora da amostra exibida)" : ""}.
-          </p>
-        )}
 
         <div className="rank-block">
           <span className="pill-label">Ranking por classificação</span>
@@ -151,14 +138,10 @@ export function StepFeedback(props: StepFeedbackProps) {
                       <div
                         key={m.uci}
                         className={`rank-chip${m.isMine ? " mine" : ""}`}
-                        title={`${m.san}: após ${fmtEval(m.evalAfter)}, Δ ${fmtDelta(m.delta)}`}
+                        title={`${m.san}: ${fmtEval(m.evalAfter)}`}
                       >
                         <span className="rank-san mono">{m.san}</span>
-                        <span
-                          className={`rank-delta mono ${m.delta > 0 ? "up" : m.delta < 0 ? "down" : "flat"}`}
-                        >
-                          {fmtDelta(m.delta)}
-                        </span>
+                        <span className="rank-delta mono">{fmtEval(m.evalAfter)}</span>
                         {m.isMine && <span className="you-tag">você</span>}
                       </div>
                     ))
@@ -177,6 +160,7 @@ export function StepFeedback(props: StepFeedbackProps) {
             </span>
           ))}
         </div>
+      </div>
       </div>
       <div className="gain">
         <span />
