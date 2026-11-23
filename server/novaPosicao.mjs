@@ -10,7 +10,11 @@ import { Chess } from "chess.js";
 
 const DUMP =
   "https://database.lichess.org/standard/lichess_db_standard_rated_2026-10.pgn.zst";
-const DEPTH = 10;
+// Profundidades iguais às do pipeline em Python (scripts/filtrar.py):
+/** Filtro (vantagem, linha calma, lance único): profundidade 16, 2 melhores lances. */
+const FILTER_DEPTH = 16;
+/** Nota de todos os lances (o que o site usa para corrigir a resposta): profundidade 13. */
+const SCORE_DEPTH = 13;
 // No Windows usa o executável de scripts/bin; no servidor (Linux) vem de STOCKFISH_PATH.
 const SF =
   process.env.STOCKFISH_PATH ||
@@ -116,6 +120,27 @@ function eloOf(game) {
   return { we, be };
 }
 
+// Critérios anti-tática, os mesmos do pipeline em Python (scripts/filtrar.py):
+/** Diferença máxima entre o melhor e o 2º melhor lance. Lance único costuma ser tático. */
+const GAP_MAX = 150;
+/** Quantos meios-lances da linha principal precisam ser calmos (sem captura/promoção). */
+const QUIET_PLIES = 4;
+/** Faixa de avaliação de uma posição "ideal": vantagem clara, mas não decidida. */
+const IDEAL_MIN_CP = 90;
+const IDEAL_MAX_CP = 320;
+/** Com a vez trocada, o mesmo lado continua melhor por pelo menos isto. */
+const IDEAL_OTHER_MIN_CP = 50;
+/** Diferença máxima de material (em peões) na posição. */
+const MATERIAL_MAX = 1;
+
+/** Partidas que servem: blitz ou mais lenta (sem bullet) e terminadas normalmente. */
+function gameOk(game) {
+  const tc = (game.match(/\[TimeControl "(\d+)\+(\d+)"\]/) || []).slice(1).map(Number);
+  if (tc.length !== 2 || tc[0] + 40 * tc[1] < 180) return false;
+  const termination = (game.match(/\[Termination "([^"]*)"\]/) || [])[1];
+  return !termination || termination === "Normal";
+}
+
 function material(chess) {
   const val = { p: 1, n: 3, b: 3, r: 5, q: 9 };
   let s = 0;
@@ -144,7 +169,7 @@ function candidatesFrom(game, avoid) {
     const ply = i + 1;
     if (ply < 22 || ply > 46) continue;
     if (board.inCheck() || board.isGameOver()) continue;
-    if (Math.abs(material(board)) > 2) continue;
+    if (Math.abs(material(board)) > MATERIAL_MAX) continue;
     if (board.board().flat().filter(Boolean).length < 12) continue;
     const fen = board.fen();
     if (avoid.has(pieceKey(fen))) continue;
@@ -229,27 +254,25 @@ function abortError() {
  * Analisa todos os lances da posição. Com `signal`, a análise pode ser
  * interrompida (o estoque usa isso para dar a vez a quem está esperando).
  */
-async function analyze(fen, signal) {
+/** Roda o Stockfish na posição e devolve a saída de texto. */
+async function runEngine(fen, depth, multipv, signal) {
   if (signal?.aborted) throw abortError();
-  const chess = new Chess(fen);
-  const moves = chess.moves({ verbose: true });
-  const n = Math.max(1, moves.length);
   const e = getEngine();
   const onAbort = () => e.proc.stdin.write("stop\n");
   signal?.addEventListener("abort", onAbort, { once: true });
   try {
     e.buf = "";
-    e.proc.stdin.write(`setoption name MultiPV value ${n}\n`);
+    e.proc.stdin.write(`setoption name MultiPV value ${multipv}\n`);
     e.proc.stdin.write("ucinewgame\n");
     e.proc.stdin.write("isready\n");
     await waitFor(e, "readyok", SF_TIMEOUT_MS);
     if (signal?.aborted) throw abortError();
     e.buf = "";
     e.proc.stdin.write(`position fen ${fen}\n`);
-    e.proc.stdin.write(`go depth ${DEPTH}\n`);
+    e.proc.stdin.write(`go depth ${depth}\n`);
     const text = await waitFor(e, "bestmove ", SF_TIMEOUT_MS);
     if (signal?.aborted) throw abortError();
-    return parseAnalysis(fen, moves, text);
+    return text;
   } catch (err) {
     if (err instanceof Error && err.name === "AbortError") throw err;
     // Descarta este processo; a próxima análise abre um novo.
@@ -260,6 +283,51 @@ async function analyze(fen, signal) {
   } finally {
     signal?.removeEventListener("abort", onAbort);
   }
+}
+
+/** Linhas da última iteração na profundidade pedida: multipv -> { cp, pv }. */
+function readLines(text, depth) {
+  const latest = new Map();
+  for (const line of text.split("\n")) {
+    if (!line.startsWith("info ") || !line.includes(` depth ${depth} `) || !line.includes(" pv ")) continue;
+    const multipv = Number((line.match(/ multipv (\d+)/) || [])[1] || 1);
+    const mate = line.match(/ score mate (-?\d+)/);
+    const cpMatch = line.match(/ score cp (-?\d+)/);
+    let cp = 0;
+    if (mate) {
+      const n = Number(mate[1]);
+      cp = Math.sign(n || 1) * (10000 - Math.min(80, Math.abs(n)));
+    } else if (cpMatch) cp = Number(cpMatch[1]);
+    const pv = (line.split(" pv ")[1] || "").trim().split(/\s+/).filter(Boolean);
+    if (pv.length) latest.set(multipv, { cp, pv });
+  }
+  if (!latest.size) throw new Error("O Stockfish não devolveu análise.");
+  return latest;
+}
+
+/** Nota de todos os lances legais, na profundidade de pontuação. */
+async function analyze(fen, signal) {
+  const moves = new Chess(fen).moves({ verbose: true });
+  const text = await runEngine(fen, SCORE_DEPTH, Math.max(1, moves.length), signal);
+  return parseAnalysis(fen, moves, text);
+}
+
+/**
+ * Filtro de um lado, como no filtrar.py: profundidade 16 com os 2 melhores
+ * lances. Tática = captura/promoção nos 4 primeiros meios-lances da linha,
+ * xeque no 1º lance, ou o melhor lance muito acima do 2º (lance único).
+ */
+async function filterSide(fen, signal) {
+  const text = await runEngine(fen, FILTER_DEPTH, 2, signal);
+  const lines = [...readLines(text, FILTER_DEPTH).values()].sort((a, b) => b.cp - a.cp);
+  const turn = new Chess(fen).turn();
+  const cp = lines[0].cp;
+  const gap = lines.length >= 2 ? cp - lines[1].cp : Infinity;
+  return {
+    whiteCp: turn === "w" ? cp : -cp,
+    gap,
+    tactical: !quietLine(fen, lines[0].pv) || gap > GAP_MAX,
+  };
 }
 
 /** Abre o dump do Lichess e o Stockfish antes da primeira requisição. */
@@ -281,21 +349,7 @@ export function warmUp() {
 }
 
 function parseAnalysis(fen, moves, text) {
-  const latest = new Map();
-  for (const line of text.split("\n")) {
-    if (!line.startsWith("info ") || !line.includes(` depth ${DEPTH} `) || !line.includes(" pv ")) continue;
-    const multipv = Number((line.match(/ multipv (\d+)/) || [])[1] || 1);
-    const mate = line.match(/ score mate (-?\d+)/);
-    const cpMatch = line.match(/ score cp (-?\d+)/);
-    let cp = 0;
-    if (mate) {
-      const n = Number(mate[1]);
-      cp = Math.sign(n || 1) * (10000 - Math.min(80, Math.abs(n)));
-    } else if (cpMatch) cp = Number(cpMatch[1]);
-    const pv = (line.split(" pv ")[1] || "").trim().split(/\s+/).filter(Boolean);
-    if (pv.length) latest.set(multipv, { cp, pv });
-  }
-  if (!latest.size) throw new Error("O Stockfish não devolveu análise.");
+  const latest = readLines(text, SCORE_DEPTH);
   let bestCp = -Infinity;
   let bestPv = latest.values().next().value.pv;
   for (const info of latest.values()) {
@@ -337,6 +391,22 @@ function parseAnalysis(fen, moves, text) {
     goodSan: good.slice(0, 4).map(([u]) => san[u] || u),
     ...themeOf(bestSan),
   };
+}
+
+function quietLine(fen, ucis) {
+  const chess = new Chess(fen);
+  for (let i = 0; i < Math.min(QUIET_PLIES, ucis.length); i++) {
+    const u = ucis[i];
+    let mv;
+    try {
+      mv = chess.move({ from: u.slice(0, 2), to: u.slice(2, 4), promotion: u[4] || undefined });
+    } catch {
+      return false;
+    }
+    if (!mv || mv.captured || mv.promotion) return false;
+    if (i === 0 && /[+#]/.test(mv.san)) return false;
+  }
+  return true;
 }
 
 function pvSan(fen, ucis) {
@@ -502,87 +572,126 @@ function keepCandidate(list, entry, limit, better) {
   if (list.length > limit) list.length = limit;
 }
 
+/**
+ * Mesmo fluxo do filtrar.py: primeiro o filtro em profundidade 16 nos dois lados
+ * (descarta cedo o que é tático), depois a nota de todos os lances em
+ * profundidade 13. Devolve null se a posição for tática para qualquer lado
+ * (essas nunca são entregues). `ideal` segue os critérios do filtrar.py; as
+ * demais são só "calmas" (estratégicas, mas fora da faixa ideal).
+ */
 async function materialize(entry, signal) {
-  const stm = await analyze(entry.fen, signal);
-  if (Math.abs(stm.whiteCp) < 20 || Math.abs(stm.whiteCp) > 700) return null;
+  const stmCheck = await filterSide(entry.fen, signal);
+  const ev = stmCheck.whiteCp;
+  if (stmCheck.tactical || Math.abs(ev) < 20 || Math.abs(ev) > 700) return null;
   const otherFen = flipFen(entry.fen);
   if (!otherFen) return null;
+  const otherCheck = await filterSide(otherFen, signal);
+  if (otherCheck.tactical) return null;
+  const ideal =
+    Math.abs(ev) >= IDEAL_MIN_CP &&
+    Math.abs(ev) <= IDEAL_MAX_CP &&
+    Math.sign(ev) === Math.sign(otherCheck.whiteCp) &&
+    Math.abs(otherCheck.whiteCp) >= IDEAL_OTHER_MIN_CP;
+  const stm = await analyze(entry.fen, signal);
   const other = await analyze(otherFen, signal);
   const puzzle = pack(entry.fen, stm, other);
+  // Como no filtrar.py: a avaliação mostrada vem do filtro (profundidade 16).
+  puzzle.eval = ev;
+  puzzle.evalOther = otherCheck.whiteCp;
+  puzzle.better = ev > 0 ? "w" : "b";
   puzzle.rating = entry.rating;
-  const playable = Math.abs(stm.whiteCp) >= 20 && Math.abs(stm.whiteCp) <= 700;
-  const sameSide = Math.sign(stm.whiteCp) === Math.sign(other.whiteCp);
-  return { puzzle, playable, ideal: Boolean(playable && stm.quiet && other.quiet && sameSide) };
+  puzzle.ideal = ideal;
+  return { puzzle, playable: true, ideal };
 }
 
 async function findPosition(rating, avoid, initial, isGone = () => false) {
   const t0 = Date.now();
   const budgetEnd = t0 + BUDGET_MS;
   await openStream();
-  const tOpen = Date.now();
-  const deadline = Math.min(tOpen + (initial ? 14000 : 22000), t0 + BUDGET_MS / 3);
-  const lowest = [];
-  const closest = [];
-  let inBand = null;
-  let games = 0;
-  while (Date.now() < deadline && games < 700 && !inBand && !isGone()) {
-    let game;
-    try {
-      game = await nextGame();
-    } catch {
-      break;
-    }
-    games += 1;
-    const { we, be } = eloOf(game);
-    if (!we || !be) continue;
-    const gameRating = Math.round((we + be) / 2);
-    const near = Math.abs(we - rating) <= ELO_BAND && Math.abs(be - rating) <= ELO_BAND;
-    if (!near && initial && lowest.length >= 3 && gameRating >= lowest[lowest.length - 1].rating) continue;
-    if (!near && !initial && closest.length >= 3 && Math.abs(gameRating - rating) >= Math.abs(closest[closest.length - 1].rating - rating)) {
-      continue;
-    }
-    const fens = candidatesFrom(game, avoid);
-    const fen = fens[Math.floor(Math.random() * fens.length)];
-    if (!fen) continue;
-    const entry = { rating: gameRating, fen };
-    if (near) {
-      inBand = entry;
-      break;
-    }
-    if (initial) keepCandidate(lowest, entry, 3, (a, b) => a.rating - b.rating);
-    else keepCandidate(closest, entry, 3, (a, b) => Math.abs(a.rating - rating) - Math.abs(b.rating - rating));
-  }
-  console.log(
-    `[nova-posicao] rating ${rating}${initial ? " (início)" : ""}: abrir dump ${tOpen - t0} ms, ` +
-      `${games} partidas lidas em ${Date.now() - tOpen} ms, ${inBand ? "achou na faixa" : "sem partida na faixa"}`,
-  );
-  const queue = [];
-  if (inBand) queue.push(inBand);
-  for (const entry of initial ? lowest : closest) {
-    if (!queue.some((item) => item.fen === entry.fen)) queue.push(entry);
-  }
   let loose = null;
-  let any = null;
-  for (const entry of queue) {
+  let round = 0;
+  // Posições táticas nunca são entregues. Se uma rodada não acha nenhuma calma,
+  // lê mais partidas e tenta de novo, até o limite de tempo da busca.
+  while (Date.now() < budgetEnd) {
+    round += 1;
     if (isGone()) throw new Error("Requisição cancelada pelo navegador.");
-    if (any && Date.now() > budgetEnd) break;
-    const tA = Date.now();
-    try {
-      const built = await materialize(entry);
-      console.log(`[nova-posicao] análise (rating ${entry.rating}) em ${Date.now() - tA} ms${built ? "" : " — descartada"}`);
-      if (!built) continue;
-      any ??= built.puzzle;
-      if (built.ideal) return built.puzzle;
-      if (built.playable) loose ??= built.puzzle;
-      if (!inBand && built.playable) return built.puzzle;
-    } catch (err) {
-      console.error(`[nova-posicao] análise falhou em ${Date.now() - tA} ms:`, err instanceof Error ? err.message : err);
+    await openStream(); // reabre se a leitura caiu ou o arquivo chegou ao fim
+    const tScan = Date.now();
+    const scanEnd = Math.min(tScan + (round > 1 ? 8000 : initial ? 14000 : 22000), t0 + BUDGET_MS / 3 + (round - 1) * 8000, budgetEnd);
+    const lowest = [];
+    const closest = [];
+    const inBandList = [];
+    let games = 0;
+    while (Date.now() < scanEnd && games < 700 && inBandList.length < 4 && !isGone()) {
+      let game;
+      try {
+        game = await nextGame();
+      } catch {
+        break;
+      }
+      games += 1;
+      if (!gameOk(game)) continue;
+      const { we, be } = eloOf(game);
+      if (!we || !be) continue;
+      const gameRating = Math.round((we + be) / 2);
+      const near = Math.abs(we - rating) <= ELO_BAND && Math.abs(be - rating) <= ELO_BAND;
+      if (!near && initial && lowest.length >= 4 && gameRating >= lowest[lowest.length - 1].rating) continue;
+      if (
+        !near &&
+        !initial &&
+        closest.length >= 4 &&
+        Math.abs(gameRating - rating) >= Math.abs(closest[closest.length - 1].rating - rating)
+      ) {
+        continue;
+      }
+      const fens = candidatesFrom(game, avoid);
+      const fen = fens[Math.floor(Math.random() * fens.length)];
+      if (!fen) continue;
+      const entry = { rating: gameRating, fen };
+      if (near) {
+        inBandList.push(entry);
+        continue;
+      }
+      if (initial) keepCandidate(lowest, entry, 4, (a, b) => a.rating - b.rating);
+      else keepCandidate(closest, entry, 4, (a, b) => Math.abs(a.rating - rating) - Math.abs(b.rating - rating));
     }
-    if (!any && Date.now() > budgetEnd) break;
+    console.log(
+      `[nova-posicao] rating ${rating}${initial ? " (início)" : ""}, rodada ${round}: ` +
+        `${games} partidas lidas em ${Date.now() - tScan} ms, ` +
+        `${inBandList.length ? `${inBandList.length} na faixa` : "sem partida na faixa"}`,
+    );
+    if (!games) break; // a leitura do Lichess não devolveu nada: não adianta insistir
+    const queue = [...inBandList];
+    for (const entry of initial ? lowest : closest) {
+      if (!queue.some((item) => item.fen === entry.fen)) queue.push(entry);
+    }
+    for (const entry of queue) {
+      if (isGone()) throw new Error("Requisição cancelada pelo navegador.");
+      if (Date.now() > budgetEnd) break;
+      const tA = Date.now();
+      try {
+        const built = await materialize(entry);
+        console.log(
+          `[nova-posicao] análise (rating ${entry.rating}) em ${Date.now() - tA} ms` +
+            (built ? (built.ideal ? " — ideal" : " — calma") : " — descartada (tática ou fora da faixa)"),
+        );
+        if (!built) continue;
+        if (built.ideal) {
+          console.log(`[nova-posicao] total ${Date.now() - t0} ms`);
+          return built.puzzle;
+        }
+        loose ??= built.puzzle;
+        if (!inBandList.length) break; // fora da faixa: a primeira calma já serve
+      } catch (err) {
+        console.error(`[nova-posicao] análise falhou em ${Date.now() - tA} ms:`, err instanceof Error ? err.message : err);
+      }
+    }
+    // Já tem uma posição calma (não ideal): só insiste na ideal por uns 20 s.
+    if (loose && (Date.now() - t0 > 20000 || !queue.length)) break;
   }
   console.log(`[nova-posicao] total ${Date.now() - t0} ms`);
-  if (loose || any) return loose ?? any;
-  throw new Error("Não achei uma posição inédita nesse rating a tempo.");
+  if (loose) return loose;
+  throw new Error("Não achei uma posição sem tática nesse rating a tempo. Tente de novo.");
 }
 
 // --- Estoque de posições prontas ---------------------------------------------
@@ -620,22 +729,18 @@ let fillerCtl = null;
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
-const isQuiet = (san) => Boolean(san) && !/[x+#]/.test(san);
-
 /**
- * O mesmo critério de "ideal" da busca ao vivo (materialize): vantagem jogável,
- * melhor lance calmo para os dois lados e o mesmo lado melhor com a vez trocada.
- * Calculado a partir da própria posição, vale também para o server/estoque.json.
+ * Só posições marcadas como ideais pelo filtro (materialize, que segue o
+ * scripts/filtrar.py, profundidades 16 e 13). Posições sem essa marca, como as
+ * de um server/estoque.json salvo antes desta versão, ficam de fora.
  */
 function isIdealPuzzle(puzzle) {
   const cp = Number(puzzle?.eval);
-  const other = Number(puzzle?.evalOther);
   return (
-    Math.abs(cp) >= 20 &&
-    Math.abs(cp) <= 700 &&
-    Math.sign(cp) === Math.sign(other) &&
-    isQuiet(puzzle?.stm?.bestSan) &&
-    isQuiet(puzzle?.other?.bestSan)
+    puzzle?.ideal === true &&
+    Math.abs(cp) >= IDEAL_MIN_CP &&
+    Math.abs(cp) <= IDEAL_MAX_CP &&
+    Math.abs(Number(puzzle?.material) || 0) <= MATERIAL_MAX
   );
 }
 
@@ -706,6 +811,7 @@ async function fillOne(target, signal) {
     if (signal.aborted) return;
     const game = await nextGame();
     games += 1;
+    if (!gameOk(game)) continue;
     const { we, be } = eloOf(game);
     if (!we || !be) continue;
     const gameRating = Math.round((we + be) / 2);
