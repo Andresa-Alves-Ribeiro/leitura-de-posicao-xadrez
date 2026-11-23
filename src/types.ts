@@ -51,6 +51,8 @@ export interface Progress {
   streak: number;
   bestStreak: number;
   done: Record<number, number>; // id -> % de acerto
+  /** Posições já mostradas que saíram da mesa sem voltar, mesmo sem nota. */
+  seen: number[];
   /** Posições concluídas, sem teto — repetições também contam. */
   solved: number;
   last: number | null;

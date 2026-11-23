@@ -143,7 +143,8 @@ export function pickNext(
   dir: RatingDir | "any" = "any",
 ): Puzzle | null {
   const target = progress.rating;
-  const fresh = puzzles.filter((p) => !(p.id in progress.done) && p.id !== exclude);
+  const seen = new Set((progress.seen ?? []).map(Number));
+  const fresh = puzzles.filter((p) => !(p.id in progress.done) && !seen.has(p.id) && p.id !== exclude);
   const aimed = fresh.filter((p) => inDir(p, target, dir)).sort(closer(target));
   if (aimed.length) return aimed[0];
   const rest = [...fresh].sort(closer(target));

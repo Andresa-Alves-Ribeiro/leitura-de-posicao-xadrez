@@ -5,7 +5,7 @@ import { applyUci, otherColor, parseFen } from "./lib/chess";
 import { applyResult, colorName, easeRating, grade, ladderDir, level, pickNext, scoreAttempt } from "./lib/scoring";
 import { stepIndex } from "./lib/explain";
 import { evalBeforeForFeedback } from "./lib/rank";
-import { loadProgress, resetProgress, saveProgress } from "./lib/storage";
+import { clearedProgress, loadProgress, resetProgress, saveProgress } from "./lib/storage";
 import { Board } from "./components/Board";
 import { StatsBar, XpBar } from "./components/StatsBar";
 import { BetterStep } from "./components/BetterStep";
@@ -136,14 +136,26 @@ export default function App() {
   }
 
   function confirmReset() {
-    const fresh = resetProgress();
+    const currentId = puzzle?.id;
+    const draft = clearedProgress(progress);
+    const next = pickNext(PUZZLES, draft, currentId);
+    const leave = next && currentId != null && currentId !== next.id ? currentId : undefined;
+    const fresh = resetProgress(progress, leave);
     setProgress(fresh);
     prevLevel.current = level(fresh.xp);
     setSkipped(null);
     setToast(null);
     setResetOpen(false);
-    const first = pickNext(PUZZLES, fresh);
-    if (first) start(first);
+    if (next) {
+      start(next);
+      return;
+    }
+    if (!pickNext(PUZZLES, fresh)) {
+      setAttempt(null);
+      setPending(null);
+    } else {
+      setToast({ message: "Não há outra posição inédita", tone: "ok" });
+    }
   }
 
   const answerBetter = useCallback((c: Color) => {
@@ -342,7 +354,7 @@ export default function App() {
           className="btn danger reset-btn"
           type="button"
           onClick={() => setResetOpen(true)}
-          title="Apaga rating, XP e histórico"
+          title="Apaga rating, XP e sequência. A posição desta mesa sai e não volta."
         >
           Zerar
         </button>
@@ -350,9 +362,9 @@ export default function App() {
       <ConfirmModal
         open={resetOpen}
         danger
-        title="Zerar o progresso?"
-        body="Isso apaga rating, XP, sequência e todas as posições resolvidas. A mesa recomeça do zero — não dá para desfazer."
-        confirmLabel="Zerar tudo"
+        title="Zerar o placar?"
+        body="Isso apaga rating, XP e sequência. A posição que está na mesa sai e não volta, como as que você já resolveu."
+        confirmLabel="Zerar placar"
         cancelLabel="Manter"
         onCancel={() => setResetOpen(false)}
         onConfirm={confirmReset}
@@ -399,7 +411,7 @@ export default function App() {
           <section className="panel">
             <h2 className="q">
               Todas as posições já foram resolvidas.
-              <small>Cada uma entra uma vez só. Zerar recomeça do menor rating.</small>
+              <small>Cada uma entra uma vez só. Zerar só apaga rating, XP e sequência.</small>
             </h2>
           </section>
         )}
