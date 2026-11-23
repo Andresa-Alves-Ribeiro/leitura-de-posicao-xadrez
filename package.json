@@ -8,6 +8,7 @@
     "build": "tsc -b && vite build",
     "preview": "vite preview",
     "start": "node server/index.mjs",
+    "estoque": "node server/baixarEstoque.mjs",
     "typecheck": "tsc -b",
     "test": "vitest run"
   },

@@ -10,15 +10,30 @@
  *   SF_THREADS       threads do Stockfish (padrão 2)
  *   SF_TIMEOUT_MS    tempo máximo de cada análise (padrão 20000)
  *   REQUEST_BUDGET_MS  tempo máximo de uma busca inteira (padrão 75000)
+ *   POOL_MIN / POOL_MAX  tamanho do estoque de posições prontas (padrão 30 / 150)
+ *   INITIAL_MAX_RATING   rating máximo das posições de início (padrão 1100)
  */
+import { readFileSync } from "node:fs";
 import http from "node:http";
-import { attachLichess, warmUp } from "./novaPosicao.mjs";
+import { addToPool, attachLichess, warmUp } from "./novaPosicao.mjs";
 
 const PORT = Number(process.env.PORT) || 8787;
 const ALLOWED = (process.env.ALLOWED_ORIGINS || "*")
   .split(",")
   .map((s) => s.trim().replace(/\/+$/, ""))
   .filter(Boolean);
+
+// Estoque salvo no repositório (npm run estoque): fica pronto assim que o servidor liga,
+// inclusive depois de o container acordar.
+try {
+  const seed = JSON.parse(readFileSync(new URL("./estoque.json", import.meta.url), "utf8"));
+  if (Array.isArray(seed)) {
+    for (const puzzle of seed) addToPool(puzzle);
+    console.log(`[estoque] ${seed.length} posições carregadas de server/estoque.json`);
+  }
+} catch {
+  /* sem arquivo de estoque: começa vazio */
+}
 
 /** Imita o `server.middlewares.use(prefixo, handler)` do Vite/connect. */
 const routes = [];
@@ -36,7 +51,7 @@ function applyCors(req, res) {
     res.setHeader("Access-Control-Allow-Origin", origin);
     res.setHeader("Vary", "Origin");
   }
-  res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
+  res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type");
   res.setHeader("Access-Control-Max-Age", "86400");
 }

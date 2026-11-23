@@ -110,3 +110,20 @@ aberta e chama o Stockfish), então roda separada, a partir do `Dockerfile`.
 2. Faça um novo deploy (variáveis `VITE_` entram no build).
 
 Rodar a API localmente fora do Vite: `npm start` (porta 8787).
+
+### Estoque de posições
+
+Com o servidor ocioso, a API prepara posições em segundo plano (prioridade: posições
+de início, depois as faixas de rating pedidas na última hora, depois um estoque geral)
+e entrega na hora quando alguém pede uma faixa que já está no estoque. Pedidos que não
+estão no estoque fazem a busca ao vivo, e o trabalho em segundo plano para na hora.
+
+O estoque fica na memória e some quando o container dorme. Para ele voltar pronto,
+salve-o no repositório de vez em quando:
+
+```bash
+npm run estoque -- https://SUA-API   # grava server/estoque.json
+git add server/estoque.json && git commit -m "Atualiza estoque" && git push
+```
+
+`GET /api/estoque` mostra o que está no estoque agora.

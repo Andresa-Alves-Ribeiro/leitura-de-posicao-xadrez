@@ -69,6 +69,15 @@ function openStream() {
         w.reject(new Error(`A leitura do banco do Lichess caiu. ${detail}`));
       }
     });
+    dec.on("end", () => {
+      // Fim do arquivo: a próxima leitura reabre o dump do começo.
+      if (decoder === dec) decoder = null;
+      if (waiter) {
+        const w = waiter;
+        waiter = null;
+        w.reject(new Error("O banco do Lichess chegou ao fim."));
+      }
+    });
     Readable.from(gen()).pipe(dec);
   })().finally(() => {
     opening = null;
@@ -210,28 +219,46 @@ function waitFor(e, token, ms) {
   });
 }
 
-async function analyze(fen) {
+function abortError() {
+  const err = new Error("Análise cancelada.");
+  err.name = "AbortError";
+  return err;
+}
+
+/**
+ * Analisa todos os lances da posição. Com `signal`, a análise pode ser
+ * interrompida (o estoque usa isso para dar a vez a quem está esperando).
+ */
+async function analyze(fen, signal) {
+  if (signal?.aborted) throw abortError();
   const chess = new Chess(fen);
   const moves = chess.moves({ verbose: true });
   const n = Math.max(1, moves.length);
   const e = getEngine();
+  const onAbort = () => e.proc.stdin.write("stop\n");
+  signal?.addEventListener("abort", onAbort, { once: true });
   try {
     e.buf = "";
     e.proc.stdin.write(`setoption name MultiPV value ${n}\n`);
     e.proc.stdin.write("ucinewgame\n");
     e.proc.stdin.write("isready\n");
     await waitFor(e, "readyok", SF_TIMEOUT_MS);
+    if (signal?.aborted) throw abortError();
     e.buf = "";
     e.proc.stdin.write(`position fen ${fen}\n`);
     e.proc.stdin.write(`go depth ${DEPTH}\n`);
     const text = await waitFor(e, "bestmove ", SF_TIMEOUT_MS);
+    if (signal?.aborted) throw abortError();
     return parseAnalysis(fen, moves, text);
   } catch (err) {
+    if (err instanceof Error && err.name === "AbortError") throw err;
     // Descarta este processo; a próxima análise abre um novo.
     e.dead = true;
     if (engine === e) engine = null;
     e.proc.kill();
     throw err;
+  } finally {
+    signal?.removeEventListener("abort", onAbort);
   }
 }
 
@@ -245,7 +272,12 @@ export function warmUp() {
   e.proc.stdin.write("isready\n");
   waitFor(e, "readyok", 60000)
     .then(() => console.log(`[warmup] Stockfish pronto em ${Date.now() - t0} ms`))
-    .catch((err) => console.error("[warmup] Stockfish:", err instanceof Error ? err.message : err));
+    .catch((err) => console.error("[warmup] Stockfish:", err instanceof Error ? err.message : err))
+    .finally(() => {
+      // Em produção o estoque começa a se encher assim que o servidor liga.
+      fillerEnabled = true;
+      kickFiller();
+    });
 }
 
 function parseAnalysis(fen, moves, text) {
@@ -364,6 +396,16 @@ function readBody(req) {
 }
 
 export function attachLichess(server) {
+  server.middlewares.use("/api/estoque", (req, res) => {
+    if (req.method !== "GET") {
+      res.statusCode = 405;
+      res.end("Use GET");
+      return;
+    }
+    res.setHeader("Content-Type", "application/json");
+    res.end(JSON.stringify(pool.map((item) => item.puzzle)));
+  });
+
   server.middlewares.use("/api/nova-posicao", async (req, res) => {
     if (req.method !== "POST") {
       res.statusCode = 405;
@@ -391,19 +433,48 @@ export function attachLichess(server) {
   });
 }
 
+// O dump do Lichess e o Stockfish são compartilhados: um trabalho por vez.
 let queue = Promise.resolve();
 
-/** Uma posição inédita, de uma partida real perto de `rating`. */
-export function novaPosicao(rating, avoidList = [], initial = false, isGone = () => false) {
-  const run = queue.then(() => {
-    // O navegador já desistiu (tempo esgotado, página fechada): não gasta CPU à toa.
-    if (isGone()) throw new Error("Requisição cancelada pelo navegador.");
-    return findPosition(rating, new Set(avoidList), initial, isGone);
-  });
+function enqueue(task) {
+  const run = queue.then(task);
   queue = run.then(
     () => {},
     () => {},
   );
+  return run;
+}
+
+/** Buscas de jogadores em andamento ou esperando na fila. */
+let waitingRequests = 0;
+
+/** Uma posição inédita, de uma partida real perto de `rating`. */
+export function novaPosicao(rating, avoidList = [], initial = false, isGone = () => false) {
+  const avoid = new Set(avoidList);
+  noteWanted(rating, initial);
+  const ready = fromPool(rating, avoid, initial);
+  if (ready) {
+    console.log(`[estoque] rating ${rating}${initial ? " (início)" : ""}: entregue do estoque (${ready.rating}), ${pool.length} no estoque`);
+    kickFiller();
+    return Promise.resolve(ready);
+  }
+  // Nada pronto: busca ao vivo, e o estoque para o que estiver fazendo.
+  waitingRequests += 1;
+  fillerCtl?.abort();
+  const run = enqueue(() => {
+    // O navegador já desistiu (tempo esgotado, página fechada): não gasta CPU à toa.
+    if (isGone()) throw new Error("Requisição cancelada pelo navegador.");
+    return findPosition(rating, avoid, initial, isGone);
+  }).then((puzzle) => {
+    addToPool(puzzle);
+    return puzzle;
+  });
+  run
+    .finally(() => {
+      waitingRequests -= 1;
+      kickFiller();
+    })
+    .catch(() => {});
   return run;
 }
 
@@ -431,12 +502,12 @@ function keepCandidate(list, entry, limit, better) {
   if (list.length > limit) list.length = limit;
 }
 
-async function materialize(entry) {
-  const stm = await analyze(entry.fen);
+async function materialize(entry, signal) {
+  const stm = await analyze(entry.fen, signal);
   if (Math.abs(stm.whiteCp) < 20 || Math.abs(stm.whiteCp) > 700) return null;
   const otherFen = flipFen(entry.fen);
   if (!otherFen) return null;
-  const other = await analyze(otherFen);
+  const other = await analyze(otherFen, signal);
   const puzzle = pack(entry.fen, stm, other);
   puzzle.rating = entry.rating;
   const playable = Math.abs(stm.whiteCp) >= 20 && Math.abs(stm.whiteCp) <= 700;
@@ -512,4 +583,162 @@ async function findPosition(rating, avoid, initial, isGone = () => false) {
   console.log(`[nova-posicao] total ${Date.now() - t0} ms`);
   if (loose || any) return loose ?? any;
   throw new Error("Não achei uma posição inédita nesse rating a tempo.");
+}
+
+// --- Estoque de posições prontas ---------------------------------------------
+// Com o servidor ocioso, analisa posições em segundo plano e guarda aqui, para
+// a próxima busca sair na hora. Quando um jogador pede uma posição que não está
+// no estoque, o trabalho em segundo plano é interrompido e a busca ao vivo passa
+// na frente. O estoque fica na memória: some quando o container dorme, exceto o
+// que estiver salvo em server/estoque.json (carregado ao ligar).
+
+const POOL_MAX = Number(process.env.POOL_MAX) || 150;
+/** Quantas posições, no total, o estoque tenta manter mesmo sem pedidos. */
+const POOL_MIN = Number(process.env.POOL_MIN) || 30;
+/** Rating máximo de uma posição "de início" (primeira visita). */
+const INITIAL_MAX = Number(process.env.INITIAL_MAX_RATING) || 1100;
+const MIN_LOW = 5;
+const MIN_PER_TARGET = 3;
+/** Fora da faixa de ±50, aceita uma posição do estoque a até esta distância. */
+const POOL_TOLERANCE = 100;
+const WANTED_TTL_MS = 60 * 60 * 1000;
+const MISS_BACKOFF_MS = 10 * 60 * 1000;
+
+/** @type {{ puzzle: any, rating: number, key: string, ideal: boolean }[]} */
+const pool = [];
+/** Faixas de rating pedidas recentemente (arredondadas a 50) -> quando. */
+const wanted = new Map();
+/** Alvos que não acharam partida: não tenta de novo por um tempo. */
+const missUntil = new Map();
+
+let fillerEnabled = false;
+let fillerRunning = false;
+/** @type {AbortController | null} */
+let fillerCtl = null;
+
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+export function addToPool(puzzle, ideal = true) {
+  if (!puzzle?.fen || !(Number(puzzle.rating) > 0)) return;
+  const key = pieceKey(puzzle.fen);
+  if (pool.some((item) => item.key === key)) return;
+  pool.push({ puzzle, rating: Number(puzzle.rating), key, ideal });
+  if (pool.length > POOL_MAX) pool.splice(0, pool.length - POOL_MAX);
+}
+
+function pickRandom(list) {
+  const best = list.filter((item) => item.ideal);
+  const from = best.length ? best : list;
+  return from[Math.floor(Math.random() * from.length)];
+}
+
+function fromPool(rating, avoid, initial) {
+  const fresh = pool.filter((item) => !avoid.has(item.key));
+  if (!fresh.length) return null;
+  const near = fresh.filter((item) => Math.abs(item.rating - rating) <= ELO_BAND);
+  if (near.length) return pickRandom(near).puzzle;
+  if (initial) {
+    // Início: a mais baixa disponível; o site ajusta o rating inicial a ela.
+    const lowest = fresh.reduce((a, b) => (b.rating < a.rating ? b : a));
+    return lowest.rating <= Math.max(INITIAL_MAX, rating + ELO_BAND) ? lowest.puzzle : null;
+  }
+  const closest = fresh.reduce((a, b) => (Math.abs(b.rating - rating) < Math.abs(a.rating - rating) ? b : a));
+  return Math.abs(closest.rating - rating) <= POOL_TOLERANCE ? closest.puzzle : null;
+}
+
+function noteWanted(rating, initial) {
+  if (initial) return; // o início é coberto pelo alvo "low"
+  wanted.set(Math.round(rating / 50) * 50, Date.now());
+}
+
+function nextTarget() {
+  const now = Date.now();
+  const lowCount = pool.filter((item) => item.rating <= INITIAL_MAX).length;
+  if (lowCount < MIN_LOW && !((missUntil.get("low") ?? 0) > now)) return { kind: "low" };
+  const recent = [...wanted.entries()].sort((a, b) => b[1] - a[1]);
+  for (const [rating, at] of recent) {
+    if (now - at > WANTED_TTL_MS) {
+      wanted.delete(rating);
+      continue;
+    }
+    if ((missUntil.get(rating) ?? 0) > now) continue;
+    const have = pool.filter((item) => Math.abs(item.rating - rating) <= ELO_BAND).length;
+    if (have < MIN_PER_TARGET) return { kind: "near", rating };
+  }
+  if (pool.length < POOL_MIN) return { kind: "any" };
+  return null;
+}
+
+function targetLabel(target) {
+  return target.kind === "near" ? `faixa ${target.rating}` : target.kind === "low" ? "início" : "geral";
+}
+
+/** Prepara uma posição para o estoque (lê partidas até achar uma que sirva ao alvo). */
+async function fillOne(target, signal) {
+  await openStream();
+  const t0 = Date.now();
+  const keys = new Set(pool.map((item) => item.key));
+  let entry = null;
+  let games = 0;
+  while (!entry && games < 1500 && Date.now() - t0 < 20000) {
+    if (signal.aborted) return;
+    const game = await nextGame();
+    games += 1;
+    const { we, be } = eloOf(game);
+    if (!we || !be) continue;
+    const gameRating = Math.round((we + be) / 2);
+    if (target.kind === "low" && gameRating > INITIAL_MAX) continue;
+    if (
+      target.kind === "near" &&
+      (Math.abs(we - target.rating) > ELO_BAND || Math.abs(be - target.rating) > ELO_BAND)
+    ) {
+      continue;
+    }
+    const fens = candidatesFrom(game, keys);
+    const fen = fens[Math.floor(Math.random() * fens.length)];
+    if (fen) entry = { rating: gameRating, fen };
+  }
+  if (!entry) {
+    missUntil.set(target.kind === "near" ? target.rating : target.kind, Date.now() + MISS_BACKOFF_MS);
+    console.log(`[estoque] ${targetLabel(target)}: nenhuma partida em ${games} lidas; tenta de novo mais tarde`);
+    return;
+  }
+  const built = await materialize(entry, signal);
+  if (signal.aborted) return;
+  if (built?.playable) {
+    addToPool(built.puzzle, built.ideal);
+    console.log(
+      `[estoque] +1 (${targetLabel(target)}, rating ${entry.rating}) em ${Date.now() - t0} ms — ${pool.length} no estoque`,
+    );
+  }
+}
+
+function kickFiller() {
+  if (fillerEnabled && waitingRequests === 0) fillerLoop().catch(() => {});
+}
+
+async function fillerLoop() {
+  if (fillerRunning) return;
+  fillerRunning = true;
+  try {
+    while (waitingRequests === 0) {
+      const target = nextTarget();
+      if (!target) break;
+      const ctl = new AbortController();
+      fillerCtl = ctl;
+      try {
+        await enqueue(() => (ctl.signal.aborted ? undefined : fillOne(target, ctl.signal)));
+      } catch (err) {
+        if (!ctl.signal.aborted) {
+          console.error("[estoque] falhou:", err instanceof Error ? err.message : err);
+          await sleep(5000);
+        }
+      } finally {
+        if (fillerCtl === ctl) fillerCtl = null;
+      }
+      await sleep(200);
+    }
+  } finally {
+    fillerRunning = false;
+  }
 }
