@@ -20,9 +20,15 @@ export function saveLive(puzzles: Puzzle[]): void {
   }
 }
 
+/**
+ * Endereço do servidor da API. Em dev fica vazio (o próprio Vite responde /api);
+ * em produção vem de VITE_API_URL, definida nas variáveis de ambiente da Vercel.
+ */
+const API_URL = ((import.meta.env.VITE_API_URL as string | undefined) ?? "").replace(/\/+$/, "");
+
 /** Pede ao servidor uma posição nova do Lichess, até 50 pontos do rating do jogador. */
 export async function fetchLivePuzzle(rating: number, avoid: string[], initial = false): Promise<Puzzle> {
-  const res = await fetch("/api/nova-posicao", {
+  const res = await fetch(`${API_URL}/api/nova-posicao`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ rating, avoid, initial }),

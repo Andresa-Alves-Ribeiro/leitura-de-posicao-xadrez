@@ -11,7 +11,12 @@ import { Chess } from "chess.js";
 const DUMP =
   "https://database.lichess.org/standard/lichess_db_standard_rated_2026-10.pgn.zst";
 const DEPTH = 10;
-const SF = path.join(process.cwd(), "scripts", "bin", "stockfish.exe");
+// No Windows usa o executável de scripts/bin; no servidor (Linux) vem de STOCKFISH_PATH.
+const SF =
+  process.env.STOCKFISH_PATH ||
+  (process.platform === "win32" ? path.join(process.cwd(), "scripts", "bin", "stockfish.exe") : "stockfish");
+const SF_THREADS = Number(process.env.SF_THREADS) || 2;
+const SF_TIMEOUT_MS = Number(process.env.SF_TIMEOUT_MS) || 20000;
 
 let decoder = null;
 let pending = "";
@@ -161,7 +166,7 @@ function analyze(fen) {
     const timer = setTimeout(() => {
       sf.kill();
       reject(new Error("O Stockfish demorou demais."));
-    }, 20000);
+    }, SF_TIMEOUT_MS);
     sf.on("error", (err) => {
       clearTimeout(timer);
       reject(err);
@@ -174,7 +179,7 @@ function analyze(fen) {
       resolve(parseAnalysis(fen, moves, buf));
     });
     sf.stdin.write("uci\n");
-    sf.stdin.write("setoption name Threads value 2\n");
+    sf.stdin.write(`setoption name Threads value ${SF_THREADS}\n`);
     sf.stdin.write("setoption name Hash value 16\n");
     sf.stdin.write(`setoption name MultiPV value ${n}\n`);
     sf.stdin.write("isready\n");

@@ -93,3 +93,20 @@ peões etc.) é dado por heurísticas em `filtrar.py`, na função `theme()`.
 Peças "cburnett" por Colin M.L. Burnett (GPLv2+), as mesmas usadas pelo Lichess.
 Posições: partidas públicas do Lichess ([database.lichess.org](https://database.lichess.org/), CC0).
 Análise: Stockfish (GPLv3).
+
+## Deploy
+
+O front (Vite) vai para a Vercel como site estático. A API `/api/nova-posicao`
+precisa de um servidor Node de verdade (ela mantém a leitura do dump do Lichess
+aberta e chama o Stockfish), então roda separada, a partir do `Dockerfile`.
+
+**API (Render, Railway, Fly.io...)**
+1. Crie um *Web Service* apontando para este repositório, usando o `Dockerfile`.
+2. Variável de ambiente: `ALLOWED_ORIGINS=https://SEU-SITE.vercel.app`.
+3. Teste: `https://SUA-API/health` deve responder `ok`.
+
+**Front (Vercel)**
+1. Em *Settings → Environment Variables*, crie `VITE_API_URL=https://SUA-API` (sem `/` no fim).
+2. Faça um novo deploy (variáveis `VITE_` entram no build).
+
+Rodar a API localmente fora do Vite: `npm start` (porta 8787).
