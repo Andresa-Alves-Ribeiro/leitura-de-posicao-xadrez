@@ -68,7 +68,9 @@ const server = http.createServer((req, res) => {
 });
 
 server.listen(PORT, () => {
-  console.log(`API Leitura de Posição ouvindo na porta ${PORT} (CORS: ${ALLOWED.join(", ")})`);
+  console.log(
+    `API Leitura de Posição ouvindo na porta ${PORT} (${process.platform}/${process.arch}, CORS: ${ALLOWED.join(", ")})`,
+  );
   // Já abre o Stockfish e o dump do Lichess, para a primeira busca não pagar esse custo.
   warmUp();
 });

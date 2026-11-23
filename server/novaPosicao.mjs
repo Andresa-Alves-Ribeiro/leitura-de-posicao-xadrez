@@ -166,10 +166,13 @@ let engine = null;
 function getEngine() {
   if (engine && !engine.dead) return engine;
   const proc = spawn(SF, [], { windowsHide: true });
-  const e = { proc, buf: "", dead: false, onData: null, onExit: null };
+  const e = { proc, buf: "", err: "", dead: false, onData: null, onExit: null };
   proc.stdout.on("data", (chunk) => {
     e.buf += chunk.toString();
     e.onData?.();
+  });
+  proc.stderr.on("data", (chunk) => {
+    e.err = (e.err + chunk.toString()).slice(-500);
   });
   proc.stdin.on("error", () => {});
   const finish = (err) => {
@@ -177,7 +180,11 @@ function getEngine() {
     if (engine === e) engine = null;
     e.onExit?.(err);
   };
-  proc.on("exit", () => finish());
+  proc.on("exit", (code, signal) => {
+    const why = signal ? `sinal ${signal}` : `código ${code}`;
+    const detail = e.err.trim() ? ` — ${e.err.trim()}` : "";
+    finish(new Error(`O Stockfish fechou (${why})${detail}`));
+  });
   proc.on("error", (err) => finish(err));
   proc.stdin.write("uci\n");
   proc.stdin.write(`setoption name Threads value ${SF_THREADS}\n`);
@@ -377,7 +384,8 @@ export function attachLichess(server) {
       res.end(JSON.stringify(puzzle));
     } catch (err) {
       console.error("[nova-posicao] erro:", err instanceof Error ? err.message : err);
-      res.statusCode = 502;
+      // 500 (e não 502): alguns proxies trocam 502/503 pela própria página de erro, sem CORS.
+      res.statusCode = 500;
       res.end(err instanceof Error ? err.message : "Falha ao buscar posição.");
     }
   });
