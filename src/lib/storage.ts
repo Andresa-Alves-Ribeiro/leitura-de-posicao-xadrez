@@ -1,16 +1,19 @@
 import type { Progress } from "../types";
 import { PUZZLES } from "../data/puzzles";
-import { lowestRating } from "./scoring";
+import { lowestRating, MIN_RATING } from "./scoring";
 
 const KEY = "leitura-posicao-v1";
 
 export const defaultProgress = (): Progress => ({
   rating: lowestRating(PUZZLES),
+  floor: MIN_RATING,
   xp: 0,
   streak: 0,
   bestStreak: 0,
   done: {},
   seen: [],
+  boards: [],
+  currentId: null,
   solved: 0,
   last: null,
   lastDelta: 0,
@@ -26,6 +29,10 @@ export function loadProgress(): Progress {
         parsed.solved = Object.keys(parsed.done ?? {}).length;
       }
       parsed.seen = Array.isArray(data.seen) ? data.seen.map(Number).filter((id) => Number.isFinite(id)) : [];
+      parsed.boards = Array.isArray(data.boards) ? data.boards.filter((fen) => typeof fen === "string") : [];
+      parsed.currentId = typeof data.currentId === "number" ? data.currentId : null;
+      parsed.floor = typeof data.floor === "number" && data.floor >= MIN_RATING ? data.floor : MIN_RATING;
+      if (parsed.rating < parsed.floor) parsed.rating = parsed.floor;
       return parsed;
     }
   } catch {
@@ -42,22 +49,23 @@ export function saveProgress(p: Progress): void {
   }
 }
 
-/** Placar zerado, com o histórico intacto. `leaveId` sai da mesa e não volta. */
-export function clearedProgress(prev: Progress, leaveId?: number): Progress {
+/** Placar zerado, com o histórico de posições intacto. */
+export function clearedProgress(prev: Progress): Progress {
   const done = { ...(prev.done ?? {}) };
-  const seen = new Set((prev.seen ?? []).map(Number));
-  if (leaveId != null) seen.add(leaveId);
+  const floor = Math.max(MIN_RATING, prev.floor ?? MIN_RATING);
   return {
     ...defaultProgress(),
+    rating: floor,
+    floor,
     done,
-    seen: [...seen],
+    boards: [...(prev.boards ?? [])],
     solved: Object.keys(done).length,
   };
 }
 
-/** Zera placar e mantém as posições já resolvidas, para nunca repetir. */
-export function resetProgress(prev: Progress, leaveId?: number): Progress {
-  const fresh = clearedProgress(prev, leaveId);
+/** Zera o placar no rating inicial e mantém as posições já usadas. */
+export function resetProgress(prev: Progress): Progress {
+  const fresh = clearedProgress(prev);
   saveProgress(fresh);
   return fresh;
 }

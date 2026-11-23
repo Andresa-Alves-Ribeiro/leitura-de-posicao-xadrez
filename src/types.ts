@@ -47,12 +47,18 @@ export interface Attempt {
 
 export interface Progress {
   rating: number;
+  /** Piso do placar. Sobe quando não existe posição na faixa pedida. */
+  floor: number;
   xp: number;
   streak: number;
   bestStreak: number;
   done: Record<number, number>; // id -> % de acerto
   /** Posições já mostradas que saíram da mesa sem voltar, mesmo sem nota. */
   seen: number[];
+  /** Tabuleiros já buscados no Lichess (só a posição das peças), para não repetir. */
+  boards: string[];
+  /** Posição ao vivo que está na mesa, se houver. */
+  currentId: number | null;
   /** Posições concluídas, sem teto — repetições também contam. */
   solved: number;
   last: number | null;

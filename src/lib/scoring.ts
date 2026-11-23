@@ -66,10 +66,18 @@ export const PASS_SCORE = 0.6;
 
 export type RatingDir = "up" | "down";
 
-/** Menor rating presente no banco. */
-export function lowestRating(puzzles: Puzzle[]): number {
-  if (!puzzles.length) return 1200;
-  return Math.min(...puzzles.map((p) => p.rating));
+/** Piso do placar. Zerar e o fim da descida param aqui. */
+export const MIN_RATING = 500;
+
+/** A posição pode vir de partidas até esta distância do rating do jogador. */
+export const RATING_BAND = 50;
+
+/** Cada uma das três respostas move o rating neste tanto, do acerto pleno à gafe. */
+export const RATING_PER_ANSWER = 16;
+
+/** Menor rating do placar. */
+export function lowestRating(_puzzles?: Puzzle[]): number {
+  return MIN_RATING;
 }
 
 function ratingSteps(puzzles: Puzzle[]): number[] {
@@ -78,13 +86,14 @@ function ratingSteps(puzzles: Puzzle[]): number[] {
 
 /** Próximo degrau que existe. No topo ou no chão, permanece. */
 export function stepRating(puzzles: Puzzle[], from: number, dir: RatingDir): number {
-  const steps = ratingSteps(puzzles);
-  if (!steps.length) return from;
-  if (dir === "up") return steps.find((r) => r > from) ?? steps[steps.length - 1];
+  const steps = ratingSteps(puzzles).filter((r) => r >= MIN_RATING);
+  const base = Math.max(from, MIN_RATING);
+  if (!steps.length) return MIN_RATING;
+  if (dir === "up") return steps.find((r) => r > base) ?? steps[steps.length - 1];
   for (let i = steps.length - 1; i >= 0; i--) {
-    if (steps[i] < from) return steps[i];
+    if (steps[i] < base) return steps[i];
   }
-  return steps[0];
+  return MIN_RATING;
 }
 
 /** Sentido depois de um resultado, inclusive quando o degrau não se move. */
@@ -94,17 +103,38 @@ export function ladderDir(progress: Progress, puzzle: Puzzle, puzzles: Puzzle[])
   return progress.rating <= lowestRating(puzzles) ? "down" : "up";
 }
 
-/** Desce um degrau. Não mexe em XP, sequência nem histórico. */
-export function easeRating(prev: Progress, puzzles: Puzzle[], from: number): Progress {
-  const rating = stepRating(puzzles, from, "down");
+/** De -1 (gafe) a +1 (melhor lance), na proporção da nota da resposta. */
+function answerSwing(pts: number): number {
+  return Math.min(1, Math.max(0, pts)) * 2 - 1;
+}
+
+/**
+ * Soma das três respostas. Cada uma vale ±RATING_PER_ANSWER:
+ * quem está melhor é certo ou errado; os dois lances seguem a nota da perda.
+ */
+export function ratingDelta(betterOk: boolean, movePts: number, otherPts: number): number {
+  const swing = (betterOk ? 1 : -1) + answerSwing(movePts) + answerSwing(otherPts);
+  return Math.round(RATING_PER_ANSWER * swing);
+}
+
+/** Piso efetivo: 500, ou o início já ajustado para a posição mais baixa encontrada. */
+export function ratingFloor(progress?: { floor?: number }): number {
+  const floor = progress?.floor;
+  return Math.max(MIN_RATING, typeof floor === "number" && floor > 0 ? floor : MIN_RATING);
+}
+
+/** Desce o valor de uma resposta errada. Não mexe em XP, sequência nem histórico. */
+export function easeRating(prev: Progress): Progress {
+  const rating = Math.max(ratingFloor(prev), prev.rating - RATING_PER_ANSWER);
   return { ...prev, rating, lastDelta: rating - prev.rating };
 }
 
-/** Sobe ou desce um degrau conforme o acerto. XP e sequência continuam iguais. */
-export function applyResult(prev: Progress, p: Puzzle, s: number, puzzles: Puzzle[]) {
+/** Sobe ou desce na proporção das três respostas. XP e sequência continuam iguais. */
+export function applyResult(prev: Progress, p: Puzzle, score: AttemptScore) {
+  const { s, betterOk, g1, g2 } = score;
   const first = !(p.id in prev.done);
   const success = s >= PASS_SCORE;
-  const rating = stepRating(puzzles, p.rating, success ? "up" : "down");
+  const rating = Math.max(ratingFloor(prev), prev.rating + ratingDelta(betterOk, g1.pts, g2.pts));
   const delta = rating - prev.rating;
   const streak = success ? prev.streak + 1 : 0;
   const xpGain = Math.round((10 + 60 * s + (streak >= 3 ? 15 : 0)) * (first ? 1 : 0.5));
@@ -143,12 +173,18 @@ export function pickNext(
   dir: RatingDir | "any" = "any",
 ): Puzzle | null {
   const target = progress.rating;
-  const seen = new Set((progress.seen ?? []).map(Number));
-  const fresh = puzzles.filter((p) => !(p.id in progress.done) && !seen.has(p.id) && p.id !== exclude);
+  const fresh = puzzles.filter((p) => !(p.id in progress.done) && p.id !== exclude);
   const aimed = fresh.filter((p) => inDir(p, target, dir)).sort(closer(target));
   if (aimed.length) return aimed[0];
   const rest = [...fresh].sort(closer(target));
   return rest[0] ?? null;
+}
+
+/** Inédita de menor rating. Só fica de fora o que já foi resolvido. */
+export function pickLowestFresh(puzzles: Puzzle[], progress: Progress): Puzzle | null {
+  const fresh = puzzles.filter((p) => !(p.id in progress.done));
+  fresh.sort((a, b) => a.rating - b.rating || a.id - b.id);
+  return fresh[0] ?? null;
 }
 
 export const colorName = (c: Color, lower = false): string =>

@@ -86,7 +86,7 @@ export function StepFeedback(props: StepFeedbackProps) {
             Seu lance está em <strong className="mono">{rank.myRank}º</strong> lugar
             {" — "}
             <span className={`cls-badge ${rank.myCls}`}>{rank.grade.label}</span>
-            {!rank.myShown ? " (fora da amostra exibida)" : ""}.
+            {!rank.myShown ? " (fora da amostra exibida)" : ""}
           </p>
         )}
 
@@ -141,9 +141,7 @@ export function StepFeedback(props: StepFeedbackProps) {
                         title={`${m.san}: ${fmtEval(m.evalAfter)}`}
                       >
                         <span className="rank-san mono">{m.san}</span>
-                        <span className={`rank-delta mono ${m.loss === 0 ? "flat" : "down"}`}>
-                          {fmtEval(m.evalAfter)}
-                        </span>
+                        <span className="rank-delta mono">{fmtEval(m.evalAfter)}</span>
                         {m.isMine && <span className="you-tag">você</span>}
                       </div>
                     ))

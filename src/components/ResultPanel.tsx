@@ -37,6 +37,7 @@ export function ResultPanel({ puzzle: p, attempt, streak, rating, onNext }: Resu
   const pct = Math.round(r.s * 100);
   const headline = pct >= 85 ? "Brilhante!" : pct >= 60 ? "Boa sessão." : "Segue treinando.";
   const ringLabel = pct >= 85 ? "Leitura afiada" : pct >= 60 ? "No caminho" : "Mais uma mesa";
+  const moved = attempt.delta !== 0;
   const climbed = attempt.delta > 0;
   const fromRating = rating - attempt.delta;
 
@@ -57,15 +58,19 @@ export function ResultPanel({ puzzle: p, attempt, streak, rating, onNext }: Resu
         </div>
       </div>
 
-      {climbed && (
+      {moved && (
         <div
-          className="rating-climb"
+          className={`rating-climb${climbed ? "" : " down"}`}
           role="status"
-          aria-label={`Você subiu ${attempt.delta} de rating, de ${fromRating} para ${rating}`}
+          aria-label={
+            climbed
+              ? `Você subiu ${attempt.delta} de rating, de ${fromRating} para ${rating}`
+              : `Você desceu ${Math.abs(attempt.delta)} de rating, de ${fromRating} para ${rating}`
+          }
         >
-          <strong className="rating-climb-delta">+{attempt.delta}</strong>
+          <strong className="rating-climb-delta">{climbed ? `+${attempt.delta}` : attempt.delta}</strong>
           <div className="rating-climb-copy">
-            <span className="rating-climb-kicker">Você subiu de rating</span>
+            <span className="rating-climb-kicker">{climbed ? "Você subiu de rating" : "Você desceu de rating"}</span>
             <span className="rating-climb-path">
               <span className="mono rating-climb-from">{fromRating}</span>
               <span className="rating-climb-arrow" aria-hidden="true">

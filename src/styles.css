@@ -457,6 +457,11 @@ svg.arrows{position:absolute;inset:0;width:100%;height:100%;pointer-events:none}
 .card.blunder .g,.card.err .g{color:var(--blunder)}
 .chip{display:inline-block;font-size:.72rem;font-weight:600;padding:3px 9px;border-radius:99px;background:rgba(216,178,90,.15);color:var(--accent);letter-spacing:.02em}
 .why{color:var(--muted);font-size:.9rem}
+.fetching{
+  margin:0;padding:10px 14px;border-radius:10px;text-align:center;
+  border:1px solid rgba(216,178,90,.45);background:rgba(216,178,90,.12);
+  color:var(--accent);font-weight:600;
+}
 .pv{font-family:var(--f-mono);font-size:.82rem;color:var(--muted);overflow-wrap:anywhere}
 .panel:has(.gain){
   display:flex;
@@ -518,6 +523,13 @@ footer p{margin:0}
   box-shadow:0 12px 28px rgba(129,182,76,.14);
   animation:climbIn .5s cubic-bezier(.2,.9,.3,1.12);
 }
+.rating-climb.down{
+  border-color:rgba(217,96,79,.55);
+  background:
+    linear-gradient(135deg, rgba(217,96,79,.22), rgba(216,178,90,.08) 58%, transparent),
+    var(--panel);
+  box-shadow:0 12px 28px rgba(217,96,79,.12);
+}
 .rating-climb-delta{
   font-family:var(--f-display);
   font-weight:400;
@@ -526,6 +538,9 @@ footer p{margin:0}
   color:#d7f0c4;
   font-variant-numeric:tabular-nums;
 }
+.rating-climb.down .rating-climb-delta{color:#f3c7c0}
+.rating-climb.down .rating-climb-kicker,
+.rating-climb.down .rating-climb-arrow{color:var(--blunder)}
 .rating-climb-copy{display:grid;gap:4px;min-width:0}
 .rating-climb-kicker{
   font-size:.72rem;font-weight:700;letter-spacing:.12em;
@@ -629,10 +644,19 @@ footer p{margin:0}
 .rank-chip{position:relative;display:flex;align-items:baseline;gap:6px;padding:7px 10px;border-radius:8px;border:1px solid var(--line);background:#252d32;min-width:4.5rem}
 .rank-chip.mine{border-color:var(--accent);background:rgba(216,178,90,.12)}
 .rank-san{font-weight:700;font-size:1.02rem}
-.rank-group.top .rank-san{color:var(--best)}
 .rank-delta{font-size:.78rem;font-weight:600}
-.rank-delta.up,.rank-delta.flat{color:var(--best)}
-.rank-delta.down{color:var(--blunder)}
+.rank-group.best .rank-san,
+.rank-group.best .rank-delta{color:var(--best)}
+.rank-group.excellent .rank-san,
+.rank-group.excellent .rank-delta{color:var(--excellent)}
+.rank-group.good .rank-san,
+.rank-group.good .rank-delta{color:var(--good)}
+.rank-group.inaccuracy .rank-san,
+.rank-group.inaccuracy .rank-delta{color:var(--inaccuracy)}
+.rank-group.mistake .rank-san,
+.rank-group.mistake .rank-delta{color:var(--mistake)}
+.rank-group.blunder .rank-san,
+.rank-group.blunder .rank-delta{color:var(--blunder)}
 .you-tag{
   position:static;align-self:center;
   font-family:var(--f-body);font-size:.62rem;font-weight:700;
