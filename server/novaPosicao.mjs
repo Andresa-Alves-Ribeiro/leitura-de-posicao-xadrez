@@ -589,8 +589,10 @@ async function findPosition(rating, avoid, initial, isGone = () => false) {
 // Com o servidor ocioso, analisa posições em segundo plano e guarda aqui, para
 // a próxima busca sair na hora. Quando um jogador pede uma posição que não está
 // no estoque, o trabalho em segundo plano é interrompido e a busca ao vivo passa
-// na frente. O estoque fica na memória: some quando o container dorme, exceto o
-// que estiver salvo em server/estoque.json (carregado ao ligar).
+// na frente. Só entram posições ideais (o mesmo critério que a busca ao vivo
+// prefere), para o estoque nunca entregar algo pior que a busca. O estoque fica
+// na memória: some quando o container dorme, exceto o que estiver salvo em
+// server/estoque.json (carregado ao ligar).
 
 const POOL_MAX = Number(process.env.POOL_MAX) || 150;
 /** Quantas posições, no total, o estoque tenta manter mesmo sem pedidos. */
@@ -604,7 +606,7 @@ const POOL_TOLERANCE = 100;
 const WANTED_TTL_MS = 60 * 60 * 1000;
 const MISS_BACKOFF_MS = 10 * 60 * 1000;
 
-/** @type {{ puzzle: any, rating: number, key: string, ideal: boolean }[]} */
+/** @type {{ puzzle: any, rating: number, key: string }[]} */
 const pool = [];
 /** Faixas de rating pedidas recentemente (arredondadas a 50) -> quando. */
 const wanted = new Map();
@@ -618,18 +620,38 @@ let fillerCtl = null;
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
-export function addToPool(puzzle, ideal = true) {
-  if (!puzzle?.fen || !(Number(puzzle.rating) > 0)) return;
+const isQuiet = (san) => Boolean(san) && !/[x+#]/.test(san);
+
+/**
+ * O mesmo critério de "ideal" da busca ao vivo (materialize): vantagem jogável,
+ * melhor lance calmo para os dois lados e o mesmo lado melhor com a vez trocada.
+ * Calculado a partir da própria posição, vale também para o server/estoque.json.
+ */
+function isIdealPuzzle(puzzle) {
+  const cp = Number(puzzle?.eval);
+  const other = Number(puzzle?.evalOther);
+  return (
+    Math.abs(cp) >= 20 &&
+    Math.abs(cp) <= 700 &&
+    Math.sign(cp) === Math.sign(other) &&
+    isQuiet(puzzle?.stm?.bestSan) &&
+    isQuiet(puzzle?.other?.bestSan)
+  );
+}
+
+/** Guarda a posição no estoque, só se for ideal. Devolve true se entrou. */
+export function addToPool(puzzle) {
+  if (!puzzle?.fen || !(Number(puzzle.rating) > 0)) return false;
+  if (!isIdealPuzzle(puzzle)) return false;
   const key = pieceKey(puzzle.fen);
-  if (pool.some((item) => item.key === key)) return;
-  pool.push({ puzzle, rating: Number(puzzle.rating), key, ideal });
+  if (pool.some((item) => item.key === key)) return false;
+  pool.push({ puzzle, rating: Number(puzzle.rating), key });
   if (pool.length > POOL_MAX) pool.splice(0, pool.length - POOL_MAX);
+  return true;
 }
 
 function pickRandom(list) {
-  const best = list.filter((item) => item.ideal);
-  const from = best.length ? best : list;
-  return from[Math.floor(Math.random() * from.length)];
+  return list[Math.floor(Math.random() * list.length)];
 }
 
 function fromPool(rating, avoid, initial) {
@@ -705,11 +727,12 @@ async function fillOne(target, signal) {
   }
   const built = await materialize(entry, signal);
   if (signal.aborted) return;
-  if (built?.playable) {
-    addToPool(built.puzzle, built.ideal);
+  if (built && addToPool(built.puzzle)) {
     console.log(
       `[estoque] +1 (${targetLabel(target)}, rating ${entry.rating}) em ${Date.now() - t0} ms — ${pool.length} no estoque`,
     );
+  } else {
+    console.log(`[estoque] ${targetLabel(target)}: posição descartada (não ideal) em ${Date.now() - t0} ms`);
   }
 }
 

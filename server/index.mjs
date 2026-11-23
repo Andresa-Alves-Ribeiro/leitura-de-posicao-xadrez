@@ -28,8 +28,8 @@ const ALLOWED = (process.env.ALLOWED_ORIGINS || "*")
 try {
   const seed = JSON.parse(readFileSync(new URL("./estoque.json", import.meta.url), "utf8"));
   if (Array.isArray(seed)) {
-    for (const puzzle of seed) addToPool(puzzle);
-    console.log(`[estoque] ${seed.length} posições carregadas de server/estoque.json`);
+    const loaded = seed.filter((puzzle) => addToPool(puzzle)).length;
+    console.log(`[estoque] ${loaded} de ${seed.length} posições carregadas de server/estoque.json (só as ideais)`);
   }
 } catch {
   /* sem arquivo de estoque: começa vazio */
