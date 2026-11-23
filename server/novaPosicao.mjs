@@ -348,20 +348,31 @@ export function warmUp() {
     });
 }
 
+/**
+ * Capturas nunca contam como lance bom: no mínimo "Impreciso". O site dá
+ * "Bom" até 50 de perda (src/lib/scoring.ts), então 51 já é "Impreciso".
+ */
+const CAPTURE_MIN_LOSS = 51;
+
 function parseAnalysis(fen, moves, text) {
   const latest = readLines(text, SCORE_DEPTH);
-  let bestCp = -Infinity;
-  let bestPv = latest.values().next().value.pv;
+  const captures = new Set(moves.filter((m) => m.captured).map((m) => m.from + m.to + (m.promotion || "")));
+  // Referência = melhor lance que NÃO é captura. O "melhor lance" mostrado nunca é captura.
+  let top = null;
+  let ref = null;
   for (const info of latest.values()) {
-    if (info.cp > bestCp) {
-      bestCp = info.cp;
-      bestPv = info.pv;
-    }
+    if (!top || info.cp > top.cp) top = info;
+    if (!captures.has(info.pv[0]) && (!ref || info.cp > ref.cp)) ref = info;
   }
+  ref ??= top;
+  const bestCp = ref.cp;
+  const bestPv = ref.pv;
   const loss = {};
   for (const info of latest.values()) {
     const uci = info.pv[0];
-    if (uci) loss[uci] = Math.max(0, bestCp - info.cp);
+    if (!uci) continue;
+    const l = Math.max(0, bestCp - info.cp);
+    loss[uci] = captures.has(uci) ? Math.max(l, CAPTURE_MIN_LOSS) : l;
   }
   const san = {};
   for (const m of moves) {
@@ -382,6 +393,9 @@ function parseAnalysis(fen, moves, text) {
     fen,
     whiteCp,
     quiet,
+    // Quanto a melhor captura supera o melhor lance calmo. Se for muito, a
+    // posição é tática nesta profundidade e é descartada.
+    captureEdge: top.cp - bestCp,
     best,
     bestSan,
     pv: pvSan(fen, bestPv),
@@ -593,7 +607,9 @@ async function materialize(entry, signal) {
     Math.sign(ev) === Math.sign(otherCheck.whiteCp) &&
     Math.abs(otherCheck.whiteCp) >= IDEAL_OTHER_MIN_CP;
   const stm = await analyze(entry.fen, signal);
+  if (stm.captureEdge > GAP_MAX) return null;
   const other = await analyze(otherFen, signal);
+  if (other.captureEdge > GAP_MAX) return null;
   const puzzle = pack(entry.fen, stm, other);
   // Como no filtrar.py: a avaliação mostrada vem do filtro (profundidade 16).
   puzzle.eval = ev;
