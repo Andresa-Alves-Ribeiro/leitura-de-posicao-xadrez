@@ -1,8 +1,8 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import type { Arrow, Attempt, Color, Progress, Puzzle } from "./types";
 import { PUZZLES } from "./data/puzzles";
 import { applyUci, otherColor, parseFen } from "./lib/chess";
-import { applyResult, colorName, grade, level, pickNext, scoreAttempt } from "./lib/scoring";
+import { applyResult, colorName, easeRating, grade, ladderDir, level, pickNext, scoreAttempt } from "./lib/scoring";
 import { stepIndex } from "./lib/explain";
 import { evalBeforeForFeedback } from "./lib/rank";
 import { loadProgress, resetProgress, saveProgress } from "./lib/storage";
@@ -37,20 +37,27 @@ function moveArrows(best: string, mine: string | null, lossMap: Record<string, n
 
 export default function App() {
   const [progress, setProgress] = useState<Progress>(loadProgress);
-  const [attempt, setAttempt] = useState<Attempt>(() => newAttempt(pickNext(PUZZLES, progress)));
+  const [attempt, setAttempt] = useState<Attempt | null>(() => {
+    const first = pickNext(PUZZLES, progress);
+    return first ? newAttempt(first) : null;
+  });
   const [pending, setPending] = useState<string | null>(null);
   const [flipped, setFlipped] = useState(false);
-  const [skipped, setSkipped] = useState<Attempt | null>(null);
+  const [skipped, setSkipped] = useState<{ attempt: Attempt; progress: Progress } | null>(null);
   const [toast, setToast] = useState<{ message: string; tone: "fire" | "gold" | "ok" } | null>(null);
   const [resetOpen, setResetOpen] = useState(false);
   const panelRef = useRef<HTMLElement>(null);
   const prevLevel = useRef(level(progress.xp));
 
-  const puzzle = useMemo(() => PUZZLES.find((p) => p.id === attempt.puzzleId) ?? PUZZLES[0], [attempt.puzzleId]);
-  const other = otherColor(puzzle.toMove);
-  const diff = difficultyOf(puzzle.rating);
-  const stageClass =
-    attempt.step === "result"
+  const puzzle = useMemo(
+    () => (attempt ? (PUZZLES.find((p) => p.id === attempt.puzzleId) ?? null) : null),
+    [attempt],
+  );
+  const other: Color = puzzle ? otherColor(puzzle.toMove) : "w";
+  const diff = difficultyOf(puzzle?.rating ?? 0);
+  const stageClass = !attempt
+    ? "stage-result"
+    : attempt.step === "result"
       ? "stage-result"
       : attempt.step.endsWith("_fb")
         ? "stage-feedback"
@@ -58,15 +65,17 @@ export default function App() {
 
   useEffect(() => saveProgress(progress), [progress]);
 
-  const activeSide: Color = attempt.step === "m2" || attempt.step === "m2_fb" ? other : puzzle.toMove;
-  useEffect(() => setFlipped(activeSide === "b"), [activeSide, attempt.puzzleId]);
+  const activeSide: Color =
+    puzzle && attempt && (attempt.step === "m2" || attempt.step === "m2_fb") ? other : (puzzle?.toMove ?? "w");
+  useEffect(() => setFlipped(activeSide === "b"), [activeSide, attempt?.puzzleId]);
 
   // No mobile, após responder, traz o painel para a vista
   useEffect(() => {
+    if (!attempt) return;
     if (typeof window === "undefined" || window.matchMedia("(min-width: 900px)").matches) return;
     if (!attempt.step.endsWith("_fb") && attempt.step !== "result") return;
     panelRef.current?.scrollIntoView({ behavior: "smooth", block: "nearest" });
-  }, [attempt.step]);
+  }, [attempt]);
 
   function start(p: Puzzle, clearSkip = true) {
     setAttempt(newAttempt(p));
@@ -78,16 +87,17 @@ export default function App() {
     if (!pending) return;
     setSkipped(null);
     setAttempt((a) => {
+      if (!a || (a.step !== "m1" && a.step !== "m2")) return a;
       if (a.step === "m1") return { ...a, m1: pending, step: "m1_fb" };
-      if (a.step === "m2") return { ...a, m2: pending, step: "m2_fb" };
-      return a;
+      return { ...a, m2: pending, step: "m2_fb" };
     });
     setPending(null);
   }, [pending]);
 
   function finishPuzzle() {
+    if (!puzzle || !attempt) return;
     const { s } = scoreAttempt(puzzle, attempt);
-    const res = applyResult(progress, puzzle, s);
+    const res = applyResult(progress, puzzle, s, PUZZLES);
     const nextLv = level(res.progress.xp);
     if (nextLv > prevLevel.current) {
       setToast({ message: `Subiu para o nível ${nextLv}`, tone: "gold" });
@@ -105,17 +115,22 @@ export default function App() {
   }
 
   function skip() {
-    setSkipped({ ...attempt });
-    const cands = PUZZLES.filter((p) => p.id !== puzzle.id && !(p.id in progress.done));
-    start(
-      cands.length ? cands[Math.floor(Math.random() * cands.length)] : pickNext(PUZZLES, progress, puzzle.id),
-      false,
-    );
+    if (!puzzle || !attempt) return;
+    const eased = easeRating(progress, PUZZLES, puzzle.rating);
+    const next = pickNext(PUZZLES, eased, puzzle.id, "down");
+    if (!next) {
+      setToast({ message: "Não há outra posição inédita", tone: "ok" });
+      return;
+    }
+    setSkipped({ attempt: { ...attempt }, progress });
+    setProgress(eased);
+    start(next, false);
   }
 
   function undoSkip() {
     if (!skipped) return;
-    setAttempt(skipped);
+    setProgress(skipped.progress);
+    setAttempt(skipped.attempt);
     setPending(null);
     setSkipped(null);
   }
@@ -127,12 +142,13 @@ export default function App() {
     setSkipped(null);
     setToast(null);
     setResetOpen(false);
-    start(pickNext(PUZZLES, fresh));
+    const first = pickNext(PUZZLES, fresh);
+    if (first) start(first);
   }
 
   const answerBetter = useCallback((c: Color) => {
     setSkipped(null);
-    setAttempt((a) => (a.step === "better" ? { ...a, better: c, step: "better_fb" } : a));
+    setAttempt((a) => (a?.step === "better" ? { ...a, better: c, step: "better_fb" } : a));
   }, []);
 
   const finishRef = useRef(finishPuzzle);
@@ -140,7 +156,7 @@ export default function App() {
 
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
-      if (resetOpen) return;
+      if (resetOpen || !attempt || !puzzle) return;
       const tag = (e.target as HTMLElement | null)?.tagName;
       if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
 
@@ -172,16 +188,21 @@ export default function App() {
           if (attempt.step === "better_fb") setAttempt({ ...attempt, step: "m1" });
           else if (attempt.step === "m1_fb") setAttempt({ ...attempt, step: "m2" });
           else if (attempt.step === "m2_fb") finishRef.current();
-          else if (attempt.step === "result") start(pickNext(PUZZLES, progress));
+          else if (attempt.step === "result") {
+            const next = pickNext(PUZZLES, progress, undefined, ladderDir(progress, puzzle, PUZZLES));
+            if (next) start(next);
+          }
         }
       }
     }
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [attempt, pending, progress, answerBetter, confirmMove, resetOpen]);
+  }, [attempt, pending, progress, puzzle, answerBetter, confirmMove, resetOpen]);
 
   // ---- tabuleiro ----
-  let boardEl;
+  let boardEl: ReactNode = null;
+  let panelEl: ReactNode = null;
+  if (attempt && puzzle) {
   if (attempt.step === "better" || attempt.step === "better_fb") {
     boardEl = <Board key={`${puzzle.id}-b`} board={parseFen(puzzle.stm.fen)} flipped={flipped} />;
   } else if (attempt.step === "m1") {
@@ -245,7 +266,6 @@ export default function App() {
   }
 
   // ---- painel ----
-  let panelEl;
   if (attempt.step === "better") {
     panelEl = <BetterStep onAnswer={answerBetter} />;
   } else if (attempt.step === "better_fb") {
@@ -293,14 +313,17 @@ export default function App() {
       />
     );
   } else {
+    const next = pickNext(PUZZLES, progress, undefined, ladderDir(progress, puzzle, PUZZLES));
     panelEl = (
       <ResultPanel
         puzzle={puzzle}
         attempt={attempt}
         streak={progress.streak}
-        onNext={() => start(pickNext(PUZZLES, progress))}
+        rating={progress.rating}
+        onNext={next ? () => start(next) : undefined}
       />
     );
+  }
   }
 
   return (
@@ -336,6 +359,8 @@ export default function App() {
       />
       <XpBar xp={progress.xp} />
       <main>
+        {attempt && puzzle ? (
+          <>
         <section className="boardcol">
           <div className="meta">
             <div className="meta-left">
@@ -367,6 +392,15 @@ export default function App() {
         <section className="panel" ref={panelRef} aria-live="polite">
           {panelEl}
         </section>
+          </>
+        ) : (
+          <section className="panel">
+            <h2 className="q">
+              Todas as posições já foram resolvidas.
+              <small>Cada uma entra uma vez só. Zerar recomeça do menor rating.</small>
+            </h2>
+          </section>
+        )}
       </main>
       <footer>
         <p>

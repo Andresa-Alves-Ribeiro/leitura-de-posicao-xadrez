@@ -5,11 +5,20 @@ export function StatsBar({ progress }: { progress: Progress }) {
   const d = progress.lastDelta;
   const lv = level(progress.xp);
   const hot = progress.streak >= 3;
+  const climb = d > 0 ? `Subiu ${d} de rating` : d < 0 ? `Desceu ${Math.abs(d)} de rating` : "Rating";
   return (
     <div className={`stats${hot ? " hot" : ""}`} role="group" aria-label="Placar">
-      <div className={`stat rating ${d > 0 ? "delta-up" : d < 0 ? "delta-down" : ""}`}>
+      <div
+        className={`stat rating ${d > 0 ? "delta-up" : d < 0 ? "delta-down" : ""}`}
+        aria-label={`${progress.rating}. ${climb}`}
+      >
         <b>{progress.rating}</b>
-        <span>Elo{d ? ` ${d > 0 ? "+" : ""}${d}` : ""}</span>
+        <span>Rating</span>
+        {d !== 0 && (
+          <em className={`rating-badge ${d > 0 ? "up" : "down"}`}>
+            {d > 0 ? `+${d}` : d}
+          </em>
+        )}
       </div>
       <div className={`stat streak${hot ? " on-fire" : ""}`} title={hot ? "Sequência em chamas!" : "Sequência"}>
         <b>{progress.streak}</b>

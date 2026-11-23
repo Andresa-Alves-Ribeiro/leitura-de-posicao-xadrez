@@ -61,17 +61,56 @@ export function evalSymbol(cp: number): string {
 export const XP_PER_LEVEL = 250;
 export const level = (xp: number): number => Math.floor(xp / XP_PER_LEVEL) + 1;
 
-/** Atualiza rating (Elo), sequência e XP depois de um problema. */
-export function applyResult(prev: Progress, p: Puzzle, s: number) {
+/** Nota média que conta como acerto — o mesmo corte da sequência. */
+export const PASS_SCORE = 0.6;
+
+export type RatingDir = "up" | "down";
+
+/** Menor rating presente no banco. */
+export function lowestRating(puzzles: Puzzle[]): number {
+  if (!puzzles.length) return 1200;
+  return Math.min(...puzzles.map((p) => p.rating));
+}
+
+function ratingSteps(puzzles: Puzzle[]): number[] {
+  return [...new Set(puzzles.map((p) => p.rating))].sort((a, b) => a - b);
+}
+
+/** Próximo degrau que existe. No topo ou no chão, permanece. */
+export function stepRating(puzzles: Puzzle[], from: number, dir: RatingDir): number {
+  const steps = ratingSteps(puzzles);
+  if (!steps.length) return from;
+  if (dir === "up") return steps.find((r) => r > from) ?? steps[steps.length - 1];
+  for (let i = steps.length - 1; i >= 0; i--) {
+    if (steps[i] < from) return steps[i];
+  }
+  return steps[0];
+}
+
+/** Sentido depois de um resultado, inclusive quando o degrau não se move. */
+export function ladderDir(progress: Progress, puzzle: Puzzle, puzzles: Puzzle[]): RatingDir {
+  if (progress.rating > puzzle.rating) return "up";
+  if (progress.rating < puzzle.rating) return "down";
+  return progress.rating <= lowestRating(puzzles) ? "down" : "up";
+}
+
+/** Desce um degrau. Não mexe em XP, sequência nem histórico. */
+export function easeRating(prev: Progress, puzzles: Puzzle[], from: number): Progress {
+  const rating = stepRating(puzzles, from, "down");
+  return { ...prev, rating, lastDelta: rating - prev.rating };
+}
+
+/** Sobe ou desce um degrau conforme o acerto. XP e sequência continuam iguais. */
+export function applyResult(prev: Progress, p: Puzzle, s: number, puzzles: Puzzle[]) {
   const first = !(p.id in prev.done);
-  const expected = 1 / (1 + Math.pow(10, (p.rating - prev.rating) / 400));
-  const K = first ? 32 : 12;
-  const delta = Math.round(K * (s - expected));
-  const streak = s >= 0.6 ? prev.streak + 1 : 0;
+  const success = s >= PASS_SCORE;
+  const rating = stepRating(puzzles, p.rating, success ? "up" : "down");
+  const delta = rating - prev.rating;
+  const streak = success ? prev.streak + 1 : 0;
   const xpGain = Math.round((10 + 60 * s + (streak >= 3 ? 15 : 0)) * (first ? 1 : 0.5));
   const progress: Progress = {
     ...prev,
-    rating: prev.rating + delta,
+    rating,
     lastDelta: delta,
     streak,
     bestStreak: Math.max(prev.bestStreak, streak),
@@ -83,13 +122,32 @@ export function applyResult(prev: Progress, p: Puzzle, s: number) {
   return { progress, delta, xpGain };
 }
 
-/** Próximo problema: o não resolvido com rating mais perto do jogador. */
-export function pickNext(puzzles: Puzzle[], progress: Progress, exclude?: number): Puzzle {
-  const unsolved = puzzles.filter((p) => !(p.id in progress.done) && p.id !== exclude);
-  const pool = unsolved.length ? unsolved : puzzles.filter((p) => p.id !== progress.last && p.id !== exclude);
-  return [...pool].sort(
-    (a, b) => Math.abs(a.rating - progress.rating) - Math.abs(b.rating - progress.rating),
-  )[0] ?? puzzles[0];
+function closer(target: number) {
+  return (a: Puzzle, b: Puzzle) => Math.abs(a.rating - target) - Math.abs(b.rating - target) || a.id - b.id;
+}
+
+function inDir(p: Puzzle, target: number, dir: RatingDir | "any"): boolean {
+  if (dir === "up") return p.rating >= target;
+  if (dir === "down") return p.rating <= target;
+  return true;
+}
+
+/**
+ * Próximo problema inédito no degrau da meta.
+ * Se esse sentido já acabou, segue para outro inédito. Nunca repete um resolvido.
+ */
+export function pickNext(
+  puzzles: Puzzle[],
+  progress: Progress,
+  exclude?: number,
+  dir: RatingDir | "any" = "any",
+): Puzzle | null {
+  const target = progress.rating;
+  const fresh = puzzles.filter((p) => !(p.id in progress.done) && p.id !== exclude);
+  const aimed = fresh.filter((p) => inDir(p, target, dir)).sort(closer(target));
+  if (aimed.length) return aimed[0];
+  const rest = [...fresh].sort(closer(target));
+  return rest[0] ?? null;
 }
 
 export const colorName = (c: Color, lower = false): string =>

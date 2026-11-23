@@ -10,7 +10,8 @@ interface ResultPanelProps {
   puzzle: Puzzle;
   attempt: Attempt;
   streak: number;
-  onNext: () => void;
+  rating: number;
+  onNext?: () => void;
 }
 
 /** Cores das setas / badges — alinhadas à escala Chess.com. */
@@ -30,12 +31,14 @@ export const ARROW_BY_CLS: Record<GradeCls, string> = {
   blunder: ARROW_BLUNDER,
 };
 
-export function ResultPanel({ puzzle: p, attempt, streak, onNext }: ResultPanelProps) {
+export function ResultPanel({ puzzle: p, attempt, streak, rating, onNext }: ResultPanelProps) {
   const r = scoreAttempt(p, attempt);
   const other = otherColor(p.toMove);
   const pct = Math.round(r.s * 100);
   const headline = pct >= 85 ? "Brilhante!" : pct >= 60 ? "Boa sessão." : "Segue treinando.";
   const ringLabel = pct >= 85 ? "Leitura afiada" : pct >= 60 ? "No caminho" : "Mais uma mesa";
+  const climbed = attempt.delta > 0;
+  const fromRating = rating - attempt.delta;
 
   return (
     <>
@@ -52,6 +55,26 @@ export function ResultPanel({ puzzle: p, attempt, streak, onNext }: ResultPanelP
           )}
         </div>
       </div>
+
+      {climbed && (
+        <div
+          className="rating-climb"
+          role="status"
+          aria-label={`Você subiu ${attempt.delta} de rating, de ${fromRating} para ${rating}`}
+        >
+          <strong className="rating-climb-delta">+{attempt.delta}</strong>
+          <div className="rating-climb-copy">
+            <span className="rating-climb-kicker">Você subiu de rating</span>
+            <span className="rating-climb-path">
+              <span className="mono rating-climb-from">{fromRating}</span>
+              <span className="rating-climb-arrow" aria-hidden="true">
+                →
+              </span>
+              <span className="mono rating-climb-now">{rating}</span>
+            </span>
+          </div>
+        </div>
+      )}
 
       <div className="res summary">
         <div className={`card ${r.betterOk ? "best" : "blunder"}`}>
@@ -90,13 +113,17 @@ export function ResultPanel({ puzzle: p, attempt, streak, onNext }: ResultPanelP
 
       <div className="gain">
         <span className="mono gain-stats">
-          {pct}% · {attempt.delta >= 0 ? "+" : ""}
-          {attempt.delta} rating · +{attempt.xpGain} XP
+          {pct}% · +{attempt.xpGain} XP
+          {attempt.delta < 0 ? ` · ${attempt.delta} rating` : ""}
           {streak >= 3 ? ` · seq. ${streak}` : ""}
         </span>
-        <button className="btn pulse" type="button" onClick={onNext}>
-          Próxima posição
-        </button>
+        {onNext ? (
+          <button className="btn pulse" type="button" onClick={onNext}>
+            Próxima posição
+          </button>
+        ) : (
+          <p className="why">Você já resolveu todas as posições.</p>
+        )}
       </div>
     </>
   );

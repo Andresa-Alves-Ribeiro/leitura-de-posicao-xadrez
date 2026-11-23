@@ -1,9 +1,11 @@
 import type { Progress } from "../types";
+import { PUZZLES } from "../data/puzzles";
+import { lowestRating } from "./scoring";
 
 const KEY = "leitura-posicao-v1";
 
 export const defaultProgress = (): Progress => ({
-  rating: 1200,
+  rating: lowestRating(PUZZLES),
   xp: 0,
   streak: 0,
   bestStreak: 0,
