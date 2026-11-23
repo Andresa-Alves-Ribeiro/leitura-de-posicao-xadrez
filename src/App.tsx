@@ -15,6 +15,7 @@ import { StepFeedback } from "./components/StepFeedback";
 import { ARROW_BEST, ARROW_BY_CLS, ResultPanel } from "./components/ResultPanel";
 import { Toast } from "./components/Toast";
 import { ConfirmModal } from "./components/ConfirmModal";
+import { Seeking } from "./components/Seeking";
 import { difficultyOf } from "./lib/difficulty";
 
 const newAttempt = (p: Puzzle): Attempt => ({
@@ -454,11 +455,6 @@ export default function App() {
         onConfirm={confirmReset}
       />
       <XpBar xp={progress.xp} />
-      {fetching && (
-        <p className="fetching" role="status">
-          Buscando uma posição nova no Lichess, em partidas de {searchAt - RATING_BAND} a {searchAt + RATING_BAND}…
-        </p>
-      )}
       <main>
         {attempt && puzzle && !fetching ? (
           <>
@@ -510,14 +506,7 @@ export default function App() {
             </button>
           </section>
         ) : fetching ? (
-          <section className="panel">
-            <h2 className="q">
-              Buscando uma posição na sua faixa.
-              <small>
-                Partidas entre {searchAt - RATING_BAND} e {searchAt + RATING_BAND}. Se não houver, entra a mais baixa e o início acompanha.
-              </small>
-            </h2>
-          </section>
+          <Seeking low={searchAt - RATING_BAND} high={searchAt + RATING_BAND} />
         ) : (
           <section className="panel">
             <h2 className="q">
