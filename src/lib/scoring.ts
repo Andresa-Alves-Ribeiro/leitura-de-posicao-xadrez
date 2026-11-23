@@ -11,7 +11,7 @@ export interface Grade {
 
 const GRADES: { max: number; grade: Grade }[] = [
   { max: 0, grade: { cls: "best", label: "Melhor", pts: 1 } },
-  { max: 20, grade: { cls: "excellent", label: "Excelente", pts: 0.9 } },
+  { max: 20, grade: { cls: "excellent", label: "Ótimo", pts: 0.9 } },
   { max: 50, grade: { cls: "good", label: "Bom", pts: 0.75 } },
   { max: 100, grade: { cls: "inaccuracy", label: "Impreciso", pts: 0.4 } },
   { max: 300, grade: { cls: "mistake", label: "Erro", pts: 0.15 } },
@@ -45,7 +45,7 @@ export const fmtEval = (cp: number): string =>
 
 export const fmtLoss = (cp: number): string => (cp / 100).toFixed(2).replace(".", ",");
 
-/** Delta de avaliação do lance vs o melhor (sempre ≤ 0). */
+/** Delta de avaliação em peões, com sinal. */
 export function fmtDelta(cp: number): string {
   if (cp === 0) return "0,00";
   const sign = cp > 0 ? "+" : "−";

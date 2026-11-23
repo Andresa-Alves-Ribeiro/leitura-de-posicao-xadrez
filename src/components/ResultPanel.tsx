@@ -42,6 +42,7 @@ export function ResultPanel({ puzzle: p, attempt, streak, rating, onNext }: Resu
 
   return (
     <>
+      <div className="panel-scroll">
       <StepBar current={3} />
       <div className="verdict pop result-hero">
         <ScoreRing pct={pct} label={ringLabel} />
@@ -109,6 +110,7 @@ export function ResultPanel({ puzzle: p, attempt, streak, rating, onNext }: Resu
             <span className={`cls-badge ${r.g2.cls}`}>{r.g2.label}</span>
           </div>
         </div>
+      </div>
       </div>
 
       <div className="gain">

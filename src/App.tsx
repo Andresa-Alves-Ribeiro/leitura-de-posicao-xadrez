@@ -374,7 +374,9 @@ export default function App() {
               Vez das {colorName(activeSide, true)}
             </span>
           </div>
-          <div className={`board-frame${pending ? " has-pending" : ""}`}>{boardEl}</div>
+          <div className="board-slot">
+            <div className={`board-frame${pending ? " has-pending" : ""}`}>{boardEl}</div>
+          </div>
           <div className="tools">
             <button className="ghost" type="button" onClick={() => setFlipped((f) => !f)}>
               Girar
@@ -404,7 +406,7 @@ export default function App() {
       </main>
       <footer>
         <p>
-          {PUZZLES.length} posições de partidas reais do Lichess · Stockfish 17.1 · Melhor / Excelente / Bom / Impreciso /
+          {PUZZLES.length} posições de partidas reais do Lichess · Stockfish 17.1 · Melhor / Ótimo / Bom / Impreciso /
           Erro / Gafe · Peças cburnett
         </p>
         <p className="kbd-hint">

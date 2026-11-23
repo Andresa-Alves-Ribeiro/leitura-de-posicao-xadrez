@@ -1,6 +1,7 @@
 import type { BoardArray, Piece, SideAnalysis } from "../types";
 import { parseFen } from "./chess";
-import { fmtDelta, fmtEval, fmtLoss, grade, type GradeCls } from "./scoring";
+import { evalAfterMove, sideFromFen } from "./rank";
+import { fmtEval, fmtLoss, grade, type GradeCls } from "./scoring";
 
 export interface MissExplain {
   title: string;
@@ -87,13 +88,18 @@ export function explainMiss(
   const myPiece = pieceAt(board, myFrom);
   const bestPiece = pieceAt(board, bestFrom);
   const captured = pieceAt(board, myTo);
-  const evalAfter = evalBefore - loss;
+  const side = sideFromFen(a.fen);
+  const evalAfter = evalAfterMove(evalBefore, loss, side);
   const lines: string[] = [];
+  const swing =
+    side === "w"
+      ? `a avaliação cai de ${fmtEval(evalBefore)} para ${fmtEval(evalAfter)}`
+      : `a avaliação sobe de ${fmtEval(evalBefore)} para ${fmtEval(evalAfter)}`;
 
   // 1) Severidade + números
   if (cls === "inaccuracy") {
     lines.push(
-      `Com ${mySan} a avaliação cai de ${fmtEval(evalBefore)} para ${fmtEval(evalAfter)} (Δ ${fmtDelta(-loss)}). Ainda não é um desastre, mas o lance perde precisão em relação a ${a.bestSan}.`,
+      `Com ${mySan} ${swing}. Ainda não é um desastre, mas o lance perde precisão em relação a ${a.bestSan}.`,
     );
   } else if (cls === "mistake") {
     lines.push(
@@ -101,7 +107,7 @@ export function explainMiss(
     );
   } else {
     lines.push(
-      `Gafe: ${mySan} derruba a avaliação em ${fmtLoss(loss)} peões (${fmtEval(evalBefore)} → ${fmtEval(evalAfter)}). Em termos práticos, você transforma uma posição jogável numa claramente inferior.`,
+      `Gafe: ${mySan} piora a posição em ${fmtLoss(loss)} peões (${fmtEval(evalBefore)} → ${fmtEval(evalAfter)}). Em termos práticos, você transforma uma posição jogável numa claramente inferior.`,
     );
   }
 
