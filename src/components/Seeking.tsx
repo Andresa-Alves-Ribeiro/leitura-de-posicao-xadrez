@@ -1,9 +1,10 @@
-import { useEffect, useState, type SVGProps } from "react";
+import { useEffect, useState, useSyncExternalStore, type SVGProps } from "react";
 import wN from "../assets/pieces/wN.svg";
 import wP from "../assets/pieces/wP.svg";
 import wB from "../assets/pieces/wB.svg";
 import wR from "../assets/pieces/wR.svg";
 import wQ from "../assets/pieces/wQ.svg";
+import { getServerStatus, subscribeServerStatus } from "../lib/livePuzzle";
 
 /** Rota aberta do cavalo, com folga para a peça não encostar na borda. */
 const TOUR =
@@ -33,6 +34,7 @@ interface SeekingProps {
 /** Espera aberta: a linha se desenha, o cavalo percorre, a faixa aparece embaixo. */
 export function Seeking({ low, high }: SeekingProps) {
   const reduce = useReducedMotion();
+  const waking = useSyncExternalStore(subscribeServerStatus, getServerStatus) === "waking";
   const motion = {
     dur: RIDE,
     repeatCount: "indefinite",
@@ -59,11 +61,23 @@ export function Seeking({ low, high }: SeekingProps) {
         ))}
       </div>
       <div className="seek-copy">
-        <p className="seek-kicker">Lichess · ao vivo</p>
-        <h2 className="seek-title">Buscando uma posição na sua faixa.</h2>
-        <p className="seek-sub">
-          Partidas de {low} a {high}. Se não houver, entra a mais baixa e o início acompanha.
-        </p>
+        {waking ? (
+          <>
+            <p className="seek-kicker">Servidor · acordando</p>
+            <h2 className="seek-title">Acordando o servidor.</h2>
+            <p className="seek-sub">
+              Ele dorme quando fica um tempo sem uso. Leva cerca de 1 minuto, e a busca começa sozinha em seguida.
+            </p>
+          </>
+        ) : (
+          <>
+            <p className="seek-kicker">Lichess · ao vivo</p>
+            <h2 className="seek-title">Buscando uma posição na sua faixa.</h2>
+            <p className="seek-sub">
+              Partidas de {low} a {high}. Se não houver, entra a mais baixa e o início acompanha.
+            </p>
+          </>
+        )}
       </div>
     </section>
   );
