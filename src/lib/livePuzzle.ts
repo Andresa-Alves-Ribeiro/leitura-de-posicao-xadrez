@@ -28,11 +28,16 @@ const API_URL = ((import.meta.env.VITE_API_URL as string | undefined) ?? "").rep
 
 /** Pede ao servidor uma posição nova do Lichess, até 50 pontos do rating do jogador. */
 export async function fetchLivePuzzle(rating: number, avoid: string[], initial = false): Promise<Puzzle> {
-  const res = await fetch(`${API_URL}/api/nova-posicao`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ rating, avoid, initial }),
-  });
+  let res: Response;
+  try {
+    res = await fetch(`${API_URL}/api/nova-posicao`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ rating, avoid, initial }),
+    });
+  } catch {
+    throw new Error("O servidor demorou demais para responder (ele pode estar acordando). Tente de novo.");
+  }
   if (!res.ok) throw new Error((await res.text()) || "Falha ao buscar posição.");
   const data = (await res.json()) as Puzzle;
   const found = Number(data.rating);

@@ -9,9 +9,10 @@
  *   STOCKFISH_PATH   caminho do executável do Stockfish
  *   SF_THREADS       threads do Stockfish (padrão 2)
  *   SF_TIMEOUT_MS    tempo máximo de cada análise (padrão 20000)
+ *   REQUEST_BUDGET_MS  tempo máximo de uma busca inteira (padrão 75000)
  */
 import http from "node:http";
-import { attachLichess } from "./novaPosicao.mjs";
+import { attachLichess, warmUp } from "./novaPosicao.mjs";
 
 const PORT = Number(process.env.PORT) || 8787;
 const ALLOWED = (process.env.ALLOWED_ORIGINS || "*")
@@ -68,4 +69,6 @@ const server = http.createServer((req, res) => {
 
 server.listen(PORT, () => {
   console.log(`API Leitura de Posição ouvindo na porta ${PORT} (CORS: ${ALLOWED.join(", ")})`);
+  // Já abre o Stockfish e o dump do Lichess, para a primeira busca não pagar esse custo.
+  warmUp();
 });

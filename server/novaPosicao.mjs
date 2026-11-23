@@ -17,6 +17,9 @@ const SF =
   (process.platform === "win32" ? path.join(process.cwd(), "scripts", "bin", "stockfish.exe") : "stockfish");
 const SF_THREADS = Number(process.env.SF_THREADS) || 2;
 const SF_TIMEOUT_MS = Number(process.env.SF_TIMEOUT_MS) || 20000;
+// Tempo máximo de uma busca inteira. Passou disso, devolve a melhor posição
+// que já tiver (ou um erro claro) antes que a plataforma corte a conexão.
+const BUDGET_MS = Number(process.env.REQUEST_BUDGET_MS) || 75000;
 
 let decoder = null;
 let pending = "";
@@ -156,36 +159,86 @@ function flipFen(fen) {
   }
 }
 
-function analyze(fen) {
+// Um único processo do Stockfish, reaproveitado entre análises. Abrir o
+// executável a cada análise custa caro (ele carrega a rede neural toda vez).
+let engine = null;
+
+function getEngine() {
+  if (engine && !engine.dead) return engine;
+  const proc = spawn(SF, [], { windowsHide: true });
+  const e = { proc, buf: "", dead: false, onData: null, onExit: null };
+  proc.stdout.on("data", (chunk) => {
+    e.buf += chunk.toString();
+    e.onData?.();
+  });
+  proc.stdin.on("error", () => {});
+  const finish = (err) => {
+    e.dead = true;
+    if (engine === e) engine = null;
+    e.onExit?.(err);
+  };
+  proc.on("exit", () => finish());
+  proc.on("error", (err) => finish(err));
+  proc.stdin.write("uci\n");
+  proc.stdin.write(`setoption name Threads value ${SF_THREADS}\n`);
+  proc.stdin.write("setoption name Hash value 16\n");
+  engine = e;
+  return e;
+}
+
+function waitFor(e, token, ms) {
+  return new Promise((resolve, reject) => {
+    const done = (fn, value) => {
+      clearTimeout(timer);
+      e.onData = null;
+      e.onExit = null;
+      fn(value);
+    };
+    const timer = setTimeout(() => done(reject, new Error("O Stockfish demorou demais.")), ms);
+    e.onData = () => {
+      if (e.buf.includes(token)) done(resolve, e.buf);
+    };
+    e.onExit = (err) => done(reject, err || new Error("O Stockfish fechou."));
+    e.onData();
+  });
+}
+
+async function analyze(fen) {
   const chess = new Chess(fen);
   const moves = chess.moves({ verbose: true });
   const n = Math.max(1, moves.length);
-  return new Promise((resolve, reject) => {
-    const sf = spawn(SF, [], { windowsHide: true });
-    let buf = "";
-    const timer = setTimeout(() => {
-      sf.kill();
-      reject(new Error("O Stockfish demorou demais."));
-    }, SF_TIMEOUT_MS);
-    sf.on("error", (err) => {
-      clearTimeout(timer);
-      reject(err);
-    });
-    sf.stdout.on("data", (chunk) => {
-      buf += chunk.toString();
-      if (!buf.includes("\nbestmove ")) return;
-      clearTimeout(timer);
-      sf.kill();
-      resolve(parseAnalysis(fen, moves, buf));
-    });
-    sf.stdin.write("uci\n");
-    sf.stdin.write(`setoption name Threads value ${SF_THREADS}\n`);
-    sf.stdin.write("setoption name Hash value 16\n");
-    sf.stdin.write(`setoption name MultiPV value ${n}\n`);
-    sf.stdin.write("isready\n");
-    sf.stdin.write(`position fen ${fen}\n`);
-    sf.stdin.write(`go depth ${DEPTH}\n`);
-  });
+  const e = getEngine();
+  try {
+    e.buf = "";
+    e.proc.stdin.write(`setoption name MultiPV value ${n}\n`);
+    e.proc.stdin.write("ucinewgame\n");
+    e.proc.stdin.write("isready\n");
+    await waitFor(e, "readyok", SF_TIMEOUT_MS);
+    e.buf = "";
+    e.proc.stdin.write(`position fen ${fen}\n`);
+    e.proc.stdin.write(`go depth ${DEPTH}\n`);
+    const text = await waitFor(e, "bestmove ", SF_TIMEOUT_MS);
+    return parseAnalysis(fen, moves, text);
+  } catch (err) {
+    // Descarta este processo; a próxima análise abre um novo.
+    e.dead = true;
+    if (engine === e) engine = null;
+    e.proc.kill();
+    throw err;
+  }
+}
+
+/** Abre o dump do Lichess e o Stockfish antes da primeira requisição. */
+export function warmUp() {
+  const t0 = Date.now();
+  openStream()
+    .then(() => console.log(`[warmup] dump do Lichess aberto em ${Date.now() - t0} ms`))
+    .catch((err) => console.error("[warmup] Lichess:", err instanceof Error ? err.message : err));
+  const e = getEngine();
+  e.proc.stdin.write("isready\n");
+  waitFor(e, "readyok", 60000)
+    .then(() => console.log(`[warmup] Stockfish pronto em ${Date.now() - t0} ms`))
+    .catch((err) => console.error("[warmup] Stockfish:", err instanceof Error ? err.message : err));
 }
 
 function parseAnalysis(fen, moves, text) {
@@ -315,10 +368,15 @@ export function attachLichess(server) {
       const rating = Number(body.rating) || 500;
       const avoid = Array.isArray(body.avoid) ? body.avoid : [];
       const initial = body.initial === true;
-      const puzzle = await novaPosicao(rating, avoid, initial);
+      let gone = false;
+      res.on("close", () => {
+        if (!res.writableEnded) gone = true;
+      });
+      const puzzle = await novaPosicao(rating, avoid, initial, () => gone);
       res.setHeader("Content-Type", "application/json");
       res.end(JSON.stringify(puzzle));
     } catch (err) {
+      console.error("[nova-posicao] erro:", err instanceof Error ? err.message : err);
       res.statusCode = 502;
       res.end(err instanceof Error ? err.message : "Falha ao buscar posição.");
     }
@@ -328,8 +386,12 @@ export function attachLichess(server) {
 let queue = Promise.resolve();
 
 /** Uma posição inédita, de uma partida real perto de `rating`. */
-export function novaPosicao(rating, avoidList = [], initial = false) {
-  const run = queue.then(() => findPosition(rating, new Set(avoidList), initial));
+export function novaPosicao(rating, avoidList = [], initial = false, isGone = () => false) {
+  const run = queue.then(() => {
+    // O navegador já desistiu (tempo esgotado, página fechada): não gasta CPU à toa.
+    if (isGone()) throw new Error("Requisição cancelada pelo navegador.");
+    return findPosition(rating, new Set(avoidList), initial, isGone);
+  });
   queue = run.then(
     () => {},
     () => {},
@@ -374,14 +436,17 @@ async function materialize(entry) {
   return { puzzle, playable, ideal: Boolean(playable && stm.quiet && other.quiet && sameSide) };
 }
 
-async function findPosition(rating, avoid, initial) {
+async function findPosition(rating, avoid, initial, isGone = () => false) {
+  const t0 = Date.now();
+  const budgetEnd = t0 + BUDGET_MS;
   await openStream();
-  const deadline = Date.now() + (initial ? 14000 : 22000);
+  const tOpen = Date.now();
+  const deadline = Math.min(tOpen + (initial ? 14000 : 22000), t0 + BUDGET_MS / 3);
   const lowest = [];
   const closest = [];
   let inBand = null;
   let games = 0;
-  while (Date.now() < deadline && games < 700 && !inBand) {
+  while (Date.now() < deadline && games < 700 && !inBand && !isGone()) {
     let game;
     try {
       game = await nextGame();
@@ -408,6 +473,10 @@ async function findPosition(rating, avoid, initial) {
     if (initial) keepCandidate(lowest, entry, 3, (a, b) => a.rating - b.rating);
     else keepCandidate(closest, entry, 3, (a, b) => Math.abs(a.rating - rating) - Math.abs(b.rating - rating));
   }
+  console.log(
+    `[nova-posicao] rating ${rating}${initial ? " (início)" : ""}: abrir dump ${tOpen - t0} ms, ` +
+      `${games} partidas lidas em ${Date.now() - tOpen} ms, ${inBand ? "achou na faixa" : "sem partida na faixa"}`,
+  );
   const queue = [];
   if (inBand) queue.push(inBand);
   for (const entry of initial ? lowest : closest) {
@@ -416,17 +485,23 @@ async function findPosition(rating, avoid, initial) {
   let loose = null;
   let any = null;
   for (const entry of queue) {
+    if (isGone()) throw new Error("Requisição cancelada pelo navegador.");
+    if (any && Date.now() > budgetEnd) break;
+    const tA = Date.now();
     try {
       const built = await materialize(entry);
+      console.log(`[nova-posicao] análise (rating ${entry.rating}) em ${Date.now() - tA} ms${built ? "" : " — descartada"}`);
       if (!built) continue;
       any ??= built.puzzle;
       if (built.ideal) return built.puzzle;
       if (built.playable) loose ??= built.puzzle;
       if (!inBand && built.playable) return built.puzzle;
-    } catch {
-      /* tenta a próxima candidata */
+    } catch (err) {
+      console.error(`[nova-posicao] análise falhou em ${Date.now() - tA} ms:`, err instanceof Error ? err.message : err);
     }
+    if (!any && Date.now() > budgetEnd) break;
   }
+  console.log(`[nova-posicao] total ${Date.now() - t0} ms`);
   if (loose || any) return loose ?? any;
   throw new Error("Não achei uma posição inédita nesse rating a tempo.");
 }
